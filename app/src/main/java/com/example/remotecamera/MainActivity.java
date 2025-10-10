@@ -17,12 +17,23 @@ import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.camera.core.Camera;
 import androidx.camera.core.CameraSelector;
+import androidx.camera.core.ImageAnalysis;
 import androidx.camera.core.ImageCapture;
 import androidx.camera.core.ImageCaptureException;
+import androidx.camera.core.ImageProxy;
 import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
+import androidx.camera.video.FallbackStrategy;
+import androidx.camera.video.MediaStoreOutputOptions;
+import androidx.camera.video.PendingRecording;
+import androidx.camera.video.Quality;
+import androidx.camera.video.QualitySelector;
+import androidx.camera.video.Recorder;
 import androidx.camera.video.Recording;
+import androidx.camera.video.VideoCapture;
+import androidx.camera.video.VideoRecordEvent;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.PermissionChecker;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -30,12 +41,14 @@ import androidx.core.view.WindowInsetsCompat;
 import com.example.remotecamera.databinding.ActivityMainBinding;
 import com.google.common.util.concurrent.ListenableFuture;
 
+import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -48,8 +61,58 @@ public class MainActivity extends AppCompatActivity {
     private static final String FILENAME_FORMAT = "yyyy-MM-dd-HH-mm-ss-SSS";
     private static final String[] REQUIRED_PERMISSIONS;
     private ImageCapture imageCapture;
+    private VideoCapture<Recorder> videoCapture;
     private Recording recording;
     private ExecutorService cameraExecutor;
+
+    private static class LuminosityAnalyzer implements ImageAnalysis.Analyzer {
+
+        private final LumaListener listener;
+
+        public LuminosityAnalyzer(LumaListener listener) {
+            this.listener = listener;
+        }
+
+        // Helper function to convert ByteBuffer to byte[]
+        private byte[] toByteArray(ByteBuffer buffer) {
+            buffer.rewind(); // rewind to zero
+            byte[] data = new byte[buffer.remaining()];
+            buffer.get(data);
+            return data;
+        }
+
+        @Override
+        public void analyze(@NonNull ImageProxy image) {
+            // Get the buffer of the first plane (Y plane for YUV_420_888)
+            ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+            byte[] data = toByteArray(buffer);
+
+            // Convert bytes to unsigned int and calculate average
+            int[] pixels = new int[data.length];
+            for (int i = 0; i < data.length; i++) {
+                pixels[i] = data[i] & 0xFF; // convert signed byte to unsigned
+            }
+
+            double luma = 0;
+            for (int value : pixels) {
+                luma += value;
+            }
+            luma /= pixels.length;
+
+            // Send result to listener
+            listener.onLuminosity(luma);
+
+            // Close image to allow next frame
+            image.close();
+        }
+
+
+    }
+
+    public interface LumaListener {
+        void onLuminosity(double luma);
+    }
+
     private ActivityResultLauncher<String[]> activityResultLauncher =
             registerForActivityResult(
                     new ActivityResultContracts.RequestMultiplePermissions(),
@@ -148,7 +211,59 @@ public class MainActivity extends AppCompatActivity {
         );
 
     }
-    private void captureVideo() {}
+    private void captureVideo() {
+        if (videoCapture == null) {
+            return;
+        }
+
+        viewBinding.videoCaptureButton.setEnabled(false);
+
+        Recording curRecording = recording;
+        if (curRecording != null) {
+            //Stop the current recording session
+            curRecording.stop();
+            recording = null;
+            return;
+        }
+
+        String name = new SimpleDateFormat(FILENAME_FORMAT, Locale.US)
+                .format(System.currentTimeMillis());
+        ContentValues contentValues = new ContentValues();
+        contentValues.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+        contentValues.put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4");
+        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
+            contentValues.put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/RemoteCamera-Video");
+        }
+
+        MediaStoreOutputOptions mediaStoreOutputOptions = new MediaStoreOutputOptions.Builder(getContentResolver(), MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+                .setContentValues(contentValues)
+                .build();
+        PendingRecording pendingRecording = videoCapture.getOutput()
+                .prepareRecording(this, mediaStoreOutputOptions);
+        if (PermissionChecker.checkSelfPermission(getBaseContext(), Manifest.permission.RECORD_AUDIO) == PermissionChecker.PERMISSION_GRANTED) {
+            pendingRecording.withAudioEnabled();
+        }
+        recording = pendingRecording.start(ContextCompat.getMainExecutor(this), (recordEvent) -> {
+                    if (recordEvent instanceof VideoRecordEvent.Start) {
+                        viewBinding.videoCaptureButton.setText(R.string.stop_capture);
+                        viewBinding.videoCaptureButton.setEnabled(true);
+                    } else if (recordEvent instanceof VideoRecordEvent.Finalize) {
+                        if (!((VideoRecordEvent.Finalize) recordEvent).hasError()) {
+                            String msg = "Video capture succeeded: " + ((VideoRecordEvent.Finalize) recordEvent).getOutputResults().getOutputUri();
+                            Toast.makeText(getBaseContext(), msg, Toast.LENGTH_SHORT).show();
+                            Log.d(TAG, msg);
+                        } else {
+                            recording.close();
+                            recording = null;
+                            Log.e(TAG, "VIDEO CAPTURE ENDS WITH ERROR: " + ((VideoRecordEvent.Finalize) recordEvent).getError());
+                        }
+                        viewBinding.videoCaptureButton.setText(R.string.stop_capture);
+                        viewBinding.videoCaptureButton.setEnabled(true);
+                    }
+                });
+
+
+    }
     private void startCamera() {
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
         cameraProviderFuture.addListener(() -> {
@@ -159,14 +274,27 @@ public class MainActivity extends AppCompatActivity {
                 throw new RuntimeException(e);
             }
 
+            Recorder recorder = new Recorder.Builder().setQualitySelector(QualitySelector.from(Quality.HIGHEST, FallbackStrategy.higherQualityOrLowerThan(Quality.SD)))
+                    .build();
+            videoCapture = VideoCapture.withOutput(recorder);
+
             Preview preview = new Preview.Builder().build();
             preview.setSurfaceProvider(viewBinding.viewFinder.getSurfaceProvider());
             imageCapture = new ImageCapture.Builder().build();
             CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
 
+            ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
+                    .build();
+            imageAnalysis.setAnalyzer(cameraExecutor, new LuminosityAnalyzer(new LumaListener() {
+                @Override
+                public void onLuminosity(double luma) {
+                    Log.d(TAG, "Average luminosity: " + luma);
+                }
+            }));
+
             try {
                 cameraProvider.unbindAll();
-                cameraProvider.bindToLifecycle(this,cameraSelector,preview, imageCapture);
+                cameraProvider.bindToLifecycle(this,cameraSelector,preview, imageCapture, videoCapture);
             } catch(Exception e) {
                 Log.e(TAG, "Use case binding failed", e);
             }
