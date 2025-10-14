@@ -167,44 +167,6 @@ public class MainActivity extends AppCompatActivity {
         return out.toByteArray();
     }
 
-    public byte[] rotateJPEG(byte[] jpegBytes, int rotationDegrees) {
-        Bitmap bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.length);
-        Matrix matrix = new Matrix();
-        matrix.postRotate(rotationDegrees);
-        Bitmap rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
-
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        rotated.compress(Bitmap.CompressFormat.JPEG, 80, out);
-        return out.toByteArray();
-    }
-
-
-    public void sendFrameToSocket(byte[] jpegBytes) {
-        // Send jpeg bytes to socket
-        new Thread(() -> {
-           try{
-               if (clientOut != null) {
-                   Log.d(TAG, "Client accepted");
-                   int length = jpegBytes.length;
-                   clientOut.write((length >> 24) & 0xFF);
-                   clientOut.write((length >> 16) & 0xFF);
-                   clientOut.write((length >> 8) & 0xFF);
-                   clientOut.write(length & 0xFF);
-
-                   clientOut.write(jpegBytes);
-                   clientOut.flush();
-               }
-           } catch(IOException e ) {
-               Log.e(TAG, "Error: " + e.getMessage());
-               try {
-                   clientOut.close();
-               } catch (IOException ex) {
-                   throw new RuntimeException(ex);
-               }
-           }
-        }).start();
-    }
-
     private void startServer() {
         new Thread(() -> {
             try {
@@ -238,7 +200,6 @@ public class MainActivity extends AppCompatActivity {
             imageAnalysis.setAnalyzer(cameraExecutor, imageProxy -> {
                byte[] jpegBytes = convertYUVToJPEG(imageProxy);
                 int rotation = imageProxy.getImageInfo().getRotationDegrees();
-                jpegBytes = rotateJPEG(jpegBytes, rotation);
                 if (mjpegServer != null) {
                     mjpegServer.setLatestFrame(jpegBytes);
                 }
