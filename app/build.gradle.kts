@@ -12,7 +12,6 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
-
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -31,6 +30,7 @@ android {
     }
 }
 val cameraxVersion = "1.2.2"
+val nanohttpdVersion = "2.3.1"
 
 dependencies {
     implementation("androidx.camera:camera-core:${cameraxVersion}")
@@ -39,6 +39,7 @@ dependencies {
     implementation("androidx.camera:camera-video:${cameraxVersion}")
     implementation("androidx.camera:camera-view:${cameraxVersion}")
     implementation("androidx.camera:camera-extensions:${cameraxVersion}")
+    implementation("org.nanohttpd:nanohttpd:${nanohttpdVersion}");
     implementation(libs.appcompat)
     implementation(libs.material)
     implementation(libs.activity)

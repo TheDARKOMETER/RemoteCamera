@@ -3,6 +3,12 @@ package com.example.remotecamera;
 import android.Manifest;
 import android.content.ContentValues;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.ImageFormat;
+import android.graphics.Matrix;
+import android.graphics.Rect;
+import android.graphics.YuvImage;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
@@ -41,6 +47,11 @@ import androidx.core.view.WindowInsetsCompat;
 import com.example.remotecamera.databinding.ActivityMainBinding;
 import com.google.common.util.concurrent.ListenableFuture;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -54,64 +65,21 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
+import com.example.remotecamera.HttpHandler.MJPEGServer;
+
+import fi.iki.elonen.NanoHTTPD;
+
 public class MainActivity extends AppCompatActivity {
 
-    private static ActivityMainBinding viewBinding;
+    private ActivityMainBinding viewBinding;
     private static final String TAG = "RemoteCameraApp";
-    private static final String FILENAME_FORMAT = "yyyy-MM-dd-HH-mm-ss-SSS";
     private static final String[] REQUIRED_PERMISSIONS;
-    private ImageCapture imageCapture;
-    private VideoCapture<Recorder> videoCapture;
-    private Recording recording;
     private ExecutorService cameraExecutor;
+    private ServerSocket serverSocket;
+    private Socket clientSocket;
+    private OutputStream clientOut;
+    private static MJPEGServer mjpegServer;
 
-    private static class LuminosityAnalyzer implements ImageAnalysis.Analyzer {
-
-        private final LumaListener listener;
-
-        public LuminosityAnalyzer(LumaListener listener) {
-            this.listener = listener;
-        }
-
-        // Helper function to convert ByteBuffer to byte[]
-        private byte[] toByteArray(ByteBuffer buffer) {
-            buffer.rewind(); // rewind to zero
-            byte[] data = new byte[buffer.remaining()];
-            buffer.get(data);
-            return data;
-        }
-
-        @Override
-        public void analyze(@NonNull ImageProxy image) {
-            // Get the buffer of the first plane (Y plane for YUV_420_888)
-            ByteBuffer buffer = image.getPlanes()[0].getBuffer();
-            byte[] data = toByteArray(buffer);
-
-            // Convert bytes to unsigned int and calculate average
-            int[] pixels = new int[data.length];
-            for (int i = 0; i < data.length; i++) {
-                pixels[i] = data[i] & 0xFF; // convert signed byte to unsigned
-            }
-
-            double luma = 0;
-            for (int value : pixels) {
-                luma += value;
-            }
-            luma /= pixels.length;
-
-            // Send result to listener
-            listener.onLuminosity(luma);
-
-            // Close image to allow next frame
-            image.close();
-        }
-
-
-    }
-
-    public interface LumaListener {
-        void onLuminosity(double luma);
-    }
 
     private ActivityResultLauncher<String[]> activityResultLauncher =
             registerForActivityResult(
@@ -145,18 +113,21 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         viewBinding = ActivityMainBinding.inflate(getLayoutInflater());
+        mjpegServer = new MJPEGServer(3014);
+        try {
+            mjpegServer.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
+            Log.d(TAG, "MJPEG server started on port 3014");
+        } catch(IOException e) {
+            Log.e(TAG, "An error occured " + e.getMessage());
+        }
+
         EdgeToEdge.enable(this);
         setContentView(viewBinding.getRoot());
-
         if (allPermissionsGranted()) {
             startCamera();
         } else {
             requestPermissions();
         }
-
-        viewBinding.imageCaptureButton.setOnClickListener((v) -> takePhoto());
-        viewBinding.videoCaptureButton.setOnClickListener((v) -> captureVideo());
-
         cameraExecutor = Executors.newSingleThreadExecutor();
     }
 
@@ -166,104 +137,88 @@ public class MainActivity extends AppCompatActivity {
         cameraExecutor.shutdown();
     }
 
-    private void takePhoto() {
+    public byte[] convertYUVToJPEG(ImageProxy image) {
+        ImageProxy.PlaneProxy[] planes = image.getPlanes();
+        int width = image.getWidth();
+        int height = image.getHeight();
 
-        // Get a stable reference of the modifiable image capture use case
-        ImageCapture imageCapture = this.imageCapture;
-        if (imageCapture == null) {
-            return;
+        ByteBuffer yBuffer = planes[0].getBuffer();
+        ByteBuffer uBuffer = planes[1].getBuffer();
+        ByteBuffer vBuffer = planes[2].getBuffer();
+
+        int ySize = yBuffer.remaining();
+        int uSize = uBuffer.remaining();
+        int vSize = vBuffer.remaining();
+
+        byte[] nv21 = new byte[ySize + uSize + vSize];
+
+        yBuffer.get(nv21, 0, ySize);
+        int uvPos = ySize;
+        for (int i = 0; i < uSize; i++) {
+            nv21[uvPos++] = vBuffer.get(i); // V
+            nv21[uvPos++] = uBuffer.get(i); // U
         }
 
-        // Create time stamped name and MediaStore entry.
-        String name = new SimpleDateFormat(FILENAME_FORMAT, Locale.US)
-                .format(System.currentTimeMillis());
-        ContentValues contentValues = new ContentValues();
-        contentValues.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
-        contentValues.put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg");
-        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
-            contentValues.put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/RemoteCamera-Image");
-        }
+        // Convert to JPEG
+        YuvImage yuvImage = new YuvImage(nv21, ImageFormat.NV21, width, height, null);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        yuvImage.compressToJpeg(new Rect(0, 0, width, height), 80, out);
 
-
-        // Create output options object which contains file + metadata
-        ImageCapture.OutputFileOptions outputFileOptions = new ImageCapture.OutputFileOptions.Builder(
-                getContentResolver(), MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
-                .build();
-
-        // Set up image capture listener, which is triggered after photo has
-        // been taken
-        imageCapture.takePicture(
-                outputFileOptions,
-                ContextCompat.getMainExecutor(this),
-                new ImageCapture.OnImageSavedCallback() {
-                    @Override
-                    public void onImageSaved(@NonNull ImageCapture.OutputFileResults outputFileResults) {
-                        String message = "Photo capture succeeded: " + outputFileResults.getSavedUri();
-                        Toast.makeText(getBaseContext(), message, Toast.LENGTH_SHORT).show();
-                        Log.d(TAG, message);
-                    }
-
-                    @Override
-                    public void onError(@NonNull ImageCaptureException exception) {
-                        Log.e(TAG, "Photo capture failed: " + exception.getMessage());
-                    }
-                }
-        );
-
+        return out.toByteArray();
     }
-    private void captureVideo() {
-        if (videoCapture == null) {
-            return;
-        }
 
-        viewBinding.videoCaptureButton.setEnabled(false);
+    public byte[] rotateJPEG(byte[] jpegBytes, int rotationDegrees) {
+        Bitmap bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.length);
+        Matrix matrix = new Matrix();
+        matrix.postRotate(rotationDegrees);
+        Bitmap rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
 
-        Recording curRecording = recording;
-        if (curRecording != null) {
-            //Stop the current recording session
-            curRecording.stop();
-            recording = null;
-            return;
-        }
-
-        String name = new SimpleDateFormat(FILENAME_FORMAT, Locale.US)
-                .format(System.currentTimeMillis());
-        ContentValues contentValues = new ContentValues();
-        contentValues.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
-        contentValues.put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4");
-        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
-            contentValues.put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/RemoteCamera-Video");
-        }
-
-        MediaStoreOutputOptions mediaStoreOutputOptions = new MediaStoreOutputOptions.Builder(getContentResolver(), MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
-                .setContentValues(contentValues)
-                .build();
-        PendingRecording pendingRecording = videoCapture.getOutput()
-                .prepareRecording(this, mediaStoreOutputOptions);
-        if (PermissionChecker.checkSelfPermission(getBaseContext(), Manifest.permission.RECORD_AUDIO) == PermissionChecker.PERMISSION_GRANTED) {
-            pendingRecording.withAudioEnabled();
-        }
-        recording = pendingRecording.start(ContextCompat.getMainExecutor(this), (recordEvent) -> {
-                    if (recordEvent instanceof VideoRecordEvent.Start) {
-                        viewBinding.videoCaptureButton.setText(R.string.stop_capture);
-                        viewBinding.videoCaptureButton.setEnabled(true);
-                    } else if (recordEvent instanceof VideoRecordEvent.Finalize) {
-                        if (!((VideoRecordEvent.Finalize) recordEvent).hasError()) {
-                            String msg = "Video capture succeeded: " + ((VideoRecordEvent.Finalize) recordEvent).getOutputResults().getOutputUri();
-                            Toast.makeText(getBaseContext(), msg, Toast.LENGTH_SHORT).show();
-                            Log.d(TAG, msg);
-                        } else {
-                            recording.close();
-                            recording = null;
-                            Log.e(TAG, "VIDEO CAPTURE ENDS WITH ERROR: " + ((VideoRecordEvent.Finalize) recordEvent).getError());
-                        }
-                        viewBinding.videoCaptureButton.setText(R.string.stop_capture);
-                        viewBinding.videoCaptureButton.setEnabled(true);
-                    }
-                });
-
-
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        rotated.compress(Bitmap.CompressFormat.JPEG, 80, out);
+        return out.toByteArray();
     }
+
+
+    public void sendFrameToSocket(byte[] jpegBytes) {
+        // Send jpeg bytes to socket
+        new Thread(() -> {
+           try{
+               if (clientOut != null) {
+                   Log.d(TAG, "Client accepted");
+                   int length = jpegBytes.length;
+                   clientOut.write((length >> 24) & 0xFF);
+                   clientOut.write((length >> 16) & 0xFF);
+                   clientOut.write((length >> 8) & 0xFF);
+                   clientOut.write(length & 0xFF);
+
+                   clientOut.write(jpegBytes);
+                   clientOut.flush();
+               }
+           } catch(IOException e ) {
+               Log.e(TAG, "Error: " + e.getMessage());
+               try {
+                   clientOut.close();
+               } catch (IOException ex) {
+                   throw new RuntimeException(ex);
+               }
+           }
+        }).start();
+    }
+
+    private void startServer() {
+        new Thread(() -> {
+            try {
+                serverSocket = new ServerSocket(3013);
+                Log.d(TAG, "SERVER RUNNING ON PORT 3013");
+                clientSocket = serverSocket.accept();
+                Log.d(TAG, "Client connected: " + clientSocket.getInetAddress());
+                clientOut = clientSocket.getOutputStream();
+            } catch(Exception e) {
+                Log.e(TAG, "Server error: " + e.getMessage() );
+            }
+        }).start();
+    }
+
     private void startCamera() {
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
         cameraProviderFuture.addListener(() -> {
@@ -274,27 +229,24 @@ public class MainActivity extends AppCompatActivity {
                 throw new RuntimeException(e);
             }
 
-            Recorder recorder = new Recorder.Builder().setQualitySelector(QualitySelector.from(Quality.HIGHEST, FallbackStrategy.higherQualityOrLowerThan(Quality.SD)))
-                    .build();
-            videoCapture = VideoCapture.withOutput(recorder);
-
             Preview preview = new Preview.Builder().build();
             preview.setSurfaceProvider(viewBinding.viewFinder.getSurfaceProvider());
-            imageCapture = new ImageCapture.Builder().build();
             CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
-
+            startServer();
             ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
                     .build();
-            imageAnalysis.setAnalyzer(cameraExecutor, new LuminosityAnalyzer(new LumaListener() {
-                @Override
-                public void onLuminosity(double luma) {
-                    Log.d(TAG, "Average luminosity: " + luma);
+            imageAnalysis.setAnalyzer(cameraExecutor, imageProxy -> {
+               byte[] jpegBytes = convertYUVToJPEG(imageProxy);
+                int rotation = imageProxy.getImageInfo().getRotationDegrees();
+                jpegBytes = rotateJPEG(jpegBytes, rotation);
+                if (mjpegServer != null) {
+                    mjpegServer.setLatestFrame(jpegBytes);
                 }
-            }));
-
+                imageProxy.close();
+            });
             try {
                 cameraProvider.unbindAll();
-                cameraProvider.bindToLifecycle(this,cameraSelector,preview, imageCapture, videoCapture);
+                cameraProvider.bindToLifecycle(this,cameraSelector,preview, imageAnalysis);
             } catch(Exception e) {
                 Log.e(TAG, "Use case binding failed", e);
             }
