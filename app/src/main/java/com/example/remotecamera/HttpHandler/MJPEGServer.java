@@ -1,8 +1,10 @@
 package com.example.remotecamera.HttpHandler;
 
+import android.content.Context;
 import android.util.Log;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 
@@ -13,8 +15,9 @@ public class MJPEGServer extends NanoHTTPD {
     private static final String TAG = "MJPEGServer";
 
     private volatile byte[] latestFrame;
+    private Context context;
 
-    public MJPEGServer(int port) {
+    public MJPEGServer(int port, Context context) {
         super(port);
     }
 
@@ -25,6 +28,38 @@ public class MJPEGServer extends NanoHTTPD {
 
     @Override
     public Response serve(IHTTPSession session) {
+        String uri = session.getUri();
+        if (uri.equals("/")) {
+            return serveHTMLPage();
+        } else if (uri.equals("/stream")) {
+            return serveMJPEGStream();
+        } else {
+            return newFixedLengthResponse(Response.Status.NOT_FOUND, NanoHTTPD.MIME_PLAINTEXT, "Not found");
+        }
+    }
+
+    private Response serveHTMLPage(IHTTPSession session) {
+    try {
+        InputStream htmlStream = context.getResources().openRawResource(
+                context.getResources().getIdentifier("mjpeg_page", "raw", context.getPackageName()));
+        int size = htmlStream.available();
+        byte[] buffer = new byte[size];
+        htmlStream.read(buffer);
+        htmlStream.close();
+        String html = new String(buffer);
+
+
+
+
+    } catch (IOException e) {
+        Log.e(TAG, "Failed to read HTML page: " + e.getMessage());
+        return newFixedLengthResponse("Failed to load page");
+    }
+
+
+   }
+
+    private Response serveMJPEGStream() {
 
         final PipedOutputStream pipedOut = new PipedOutputStream();
         final PipedInputStream pipedIn;
@@ -42,7 +77,7 @@ public class MJPEGServer extends NanoHTTPD {
                 while (true) {
                     byte[] frame = latestFrame;
                     if (frame == null) {
-                        Thread.sleep(10); // wait for first frame
+                        Thread.sleep(10); // wait for first frame, prevents Busy waiting
                         continue;
                     }
 

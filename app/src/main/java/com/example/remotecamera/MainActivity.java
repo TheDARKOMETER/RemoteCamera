@@ -88,7 +88,6 @@ public class MainActivity extends AppCompatActivity {
                         @Override
                         public void onActivityResult(Map<String, Boolean> permissions) {
                             boolean permissionGranted = true;
-
                             for (Map.Entry<String,Boolean> entry : permissions.entrySet()) {
                                 String key = entry.getKey();
                                 Boolean value = entry.getValue();
@@ -97,7 +96,6 @@ public class MainActivity extends AppCompatActivity {
                                     break;
                                 }
                             }
-
                             if (!permissionGranted) {
                                 Toast.makeText(getBaseContext(),
                                         "Permission request denied",
@@ -113,7 +111,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         viewBinding = ActivityMainBinding.inflate(getLayoutInflater());
-        mjpegServer = new MJPEGServer(3014);
+        mjpegServer = new MJPEGServer(3014, getApplicationContext());
         try {
             mjpegServer.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
             Log.d(TAG, "MJPEG server started on port 3014");
