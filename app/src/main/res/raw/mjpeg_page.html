@@ -1,11 +1,15 @@
 <!DOCTYPE html>
 <html language="en">
     <head>
-        <meta charset="UTF-8" name="viewport" content="width=device-width, intitial-scale=1.0">
+        <link rel="stylesheet" href="/mjpeg_style.css"/>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Remote Camera</title>
     </head>
     <body>
-        <img src="/stream.mjpeg"/>
-        <button onclick="alert('Hello!')">Record</button>
+        <main class="dashboard">
+            <img src="/stream"/>
+            <button onclick="alert('Debug')">Record</button>
+        </main>
     </body>
 </html>

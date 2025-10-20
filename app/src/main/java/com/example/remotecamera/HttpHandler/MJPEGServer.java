@@ -3,6 +3,7 @@ package com.example.remotecamera.HttpHandler;
 import android.content.Context;
 import android.util.Log;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PipedInputStream;
@@ -19,6 +20,7 @@ public class MJPEGServer extends NanoHTTPD {
 
     public MJPEGServer(int port, Context context) {
         super(port);
+        this.context = context;
     }
 
     // Called from MainActivity whenever a new JPEG frame is ready
@@ -30,10 +32,13 @@ public class MJPEGServer extends NanoHTTPD {
     public Response serve(IHTTPSession session) {
         String uri = session.getUri();
         if (uri.equals("/")) {
-            return serveHTMLPage();
+            return serveHTMLPage(session);
         } else if (uri.equals("/stream")) {
             return serveMJPEGStream();
-        } else {
+        } else if (uri.equals("/mjpeg_style.css")) {
+            return serveCSS(session);
+        }
+        else {
             return newFixedLengthResponse(Response.Status.NOT_FOUND, NanoHTTPD.MIME_PLAINTEXT, "Not found");
         }
     }
@@ -42,28 +47,44 @@ public class MJPEGServer extends NanoHTTPD {
     try {
         InputStream htmlStream = context.getResources().openRawResource(
                 context.getResources().getIdentifier("mjpeg_page", "raw", context.getPackageName()));
+
         int size = htmlStream.available();
         byte[] buffer = new byte[size];
         htmlStream.read(buffer);
-        htmlStream.close();
         String html = new String(buffer);
-
-
-
-
+        return newFixedLengthResponse(Response.Status.OK, "text/html", html);
     } catch (IOException e) {
         Log.e(TAG, "Failed to read HTML page: " + e.getMessage());
         return newFixedLengthResponse("Failed to load page");
     }
+   }
 
+   private Response serveCSS(IHTTPSession session) {
+        try {
+            InputStream cssStream = context.getResources().openRawResource(
+                    context.getResources().getIdentifier("mjpeg_style", "raw", context.getPackageName()));
 
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] buffer = new byte[1024];
+            int read;
+
+            while ((read = cssStream.read(buffer)) != -1) {
+                baos.write(buffer, 0, read);
+            }
+
+            String css = baos.toString("UTF-8");
+            cssStream.close();
+            baos.close();
+            return newFixedLengthResponse(Response.Status.OK,"text/css", css);
+        } catch(IOException e) {
+            Log.e(TAG, "Failed to return CSS style" + e.getMessage());
+            return newFixedLengthResponse("Failed to load CSS");
+        }
    }
 
     private Response serveMJPEGStream() {
-
         final PipedOutputStream pipedOut = new PipedOutputStream();
         final PipedInputStream pipedIn;
-
         try {
             pipedIn = new PipedInputStream(pipedOut, 64 * 1024); // 64KB buffer
         } catch (IOException e) {
