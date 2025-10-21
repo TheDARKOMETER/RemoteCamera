@@ -13,36 +13,23 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.util.Log;
+import android.widget.Button;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
 import androidx.activity.result.ActivityResultCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
-import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.camera.core.Camera;
+
 import androidx.camera.core.CameraSelector;
 import androidx.camera.core.ImageAnalysis;
-import androidx.camera.core.ImageCapture;
-import androidx.camera.core.ImageCaptureException;
+
 import androidx.camera.core.ImageProxy;
 import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
-import androidx.camera.video.FallbackStrategy;
-import androidx.camera.video.MediaStoreOutputOptions;
-import androidx.camera.video.PendingRecording;
-import androidx.camera.video.Quality;
-import androidx.camera.video.QualitySelector;
-import androidx.camera.video.Recorder;
-import androidx.camera.video.Recording;
-import androidx.camera.video.VideoCapture;
-import androidx.camera.video.VideoRecordEvent;
 import androidx.core.content.ContextCompat;
-import androidx.core.content.PermissionChecker;
-import androidx.core.graphics.Insets;
-import androidx.core.view.ViewCompat;
-import androidx.core.view.WindowInsetsCompat;
+
 
 import com.example.remotecamera.databinding.ActivityMainBinding;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -79,9 +66,10 @@ public class MainActivity extends AppCompatActivity {
     private Socket clientSocket;
     private OutputStream clientOut;
     private static MJPEGServer mjpegServer;
+    private ProcessCameraProvider cameraProvider;
 
 
-    private ActivityResultLauncher<String[]> activityResultLauncher =
+    private final ActivityResultLauncher<String[]> activityResultLauncher =
             registerForActivityResult(
                     new ActivityResultContracts.RequestMultiplePermissions(),
                     new ActivityResultCallback<Map<String, Boolean>>() {
@@ -121,12 +109,15 @@ public class MainActivity extends AppCompatActivity {
 
         EdgeToEdge.enable(this);
         setContentView(viewBinding.getRoot());
-        if (allPermissionsGranted()) {
-            startCamera();
-        } else {
-            requestPermissions();
-        }
         cameraExecutor = Executors.newSingleThreadExecutor();
+        if (!allPermissionsGranted()) {
+            requestPermissions();
+        } else {
+            startCamera();
+        }
+        viewBinding.streamButton.setOnClickListener((e) -> {
+            startStream();
+        });
     }
 
     @Override
@@ -182,7 +173,6 @@ public class MainActivity extends AppCompatActivity {
     private void startCamera() {
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
         cameraProviderFuture.addListener(() -> {
-            ProcessCameraProvider cameraProvider;
             try {
                 cameraProvider = cameraProviderFuture.get();
             } catch (ExecutionException | InterruptedException e) {
@@ -192,24 +182,34 @@ public class MainActivity extends AppCompatActivity {
             Preview preview = new Preview.Builder().build();
             preview.setSurfaceProvider(viewBinding.viewFinder.getSurfaceProvider());
             CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
-            startServer();
-            ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
-                    .build();
-            imageAnalysis.setAnalyzer(cameraExecutor, imageProxy -> {
-               byte[] jpegBytes = convertYUVToJPEG(imageProxy);
-                int rotation = imageProxy.getImageInfo().getRotationDegrees();
-                if (mjpegServer != null) {
-                    mjpegServer.setLatestFrame(jpegBytes);
-                }
-                imageProxy.close();
-            });
             try {
                 cameraProvider.unbindAll();
-                cameraProvider.bindToLifecycle(this,cameraSelector,preview, imageAnalysis);
+                cameraProvider.bindToLifecycle(this,cameraSelector,preview);
             } catch(Exception e) {
                 Log.e(TAG, "Use case binding failed", e);
             }
         }, ContextCompat.getMainExecutor(this));
+    }
+
+    private void startStream() {
+        viewBinding.streamButton.setEnabled(false);
+        startServer();
+        ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
+                .build();
+        imageAnalysis.setAnalyzer(cameraExecutor, imageProxy -> {
+            byte[] jpegBytes = convertYUVToJPEG(imageProxy);
+            if (mjpegServer != null) {
+                mjpegServer.setLatestFrame(jpegBytes);
+            }
+            imageProxy.close();
+        });
+        CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
+
+        try {
+            cameraProvider.bindToLifecycle(this, cameraSelector, imageAnalysis);
+        } catch(Exception e) {
+            Log.e(TAG, "Use case binding failed", e);
+        }
     }
     private void requestPermissions() {
         activityResultLauncher.launch(REQUIRED_PERMISSIONS);

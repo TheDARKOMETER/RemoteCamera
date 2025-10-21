@@ -64,17 +64,17 @@ public class MJPEGServer extends NanoHTTPD {
             InputStream cssStream = context.getResources().openRawResource(
                     context.getResources().getIdentifier("mjpeg_style", "raw", context.getPackageName()));
 
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ByteArrayOutputStream baoStream = new ByteArrayOutputStream();
             byte[] buffer = new byte[1024];
             int read;
 
             while ((read = cssStream.read(buffer)) != -1) {
-                baos.write(buffer, 0, read);
+                baoStream.write(buffer, 0, read);
             }
 
-            String css = baos.toString("UTF-8");
+            String css = baoStream.toString("UTF-8");
             cssStream.close();
-            baos.close();
+            baoStream.close();
             return newFixedLengthResponse(Response.Status.OK,"text/css", css);
         } catch(IOException e) {
             Log.e(TAG, "Failed to return CSS style" + e.getMessage());

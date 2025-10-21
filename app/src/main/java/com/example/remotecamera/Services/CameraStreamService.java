@@ -16,6 +16,8 @@ import com.example.remotecamera.HttpHandler.MJPEGServer;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+
+// TODO
 public class CameraStreamService extends Service {
     private static final String CHANNEL_ID = "camera_stream_channel";
     private static final String TAG = "CameraStreamService";
