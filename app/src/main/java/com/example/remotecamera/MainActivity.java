@@ -1,19 +1,23 @@
 package com.example.remotecamera;
 
 import android.Manifest;
-import android.content.ContentValues;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.ImageFormat;
-import android.graphics.Matrix;
+import android.graphics.Paint;
 import android.graphics.Rect;
+import android.graphics.Typeface;
 import android.graphics.YuvImage;
+import android.icu.text.SimpleDateFormat;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
-import android.provider.MediaStore;
 import android.util.Log;
-import android.widget.Button;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
@@ -36,21 +40,20 @@ import com.google.common.util.concurrent.ListenableFuture;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.ByteBuffer;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 
 import com.example.remotecamera.HttpHandler.MJPEGServer;
 
@@ -62,11 +65,9 @@ public class MainActivity extends AppCompatActivity {
     private static final String TAG = "RemoteCameraApp";
     private static final String[] REQUIRED_PERMISSIONS;
     private ExecutorService cameraExecutor;
-    private ServerSocket serverSocket;
-    private Socket clientSocket;
-    private OutputStream clientOut;
     private static MJPEGServer mjpegServer;
     private ProcessCameraProvider cameraProvider;
+    private boolean isStreaming = false;
 
 
     private final ActivityResultLauncher<String[]> activityResultLauncher =
@@ -103,10 +104,10 @@ public class MainActivity extends AppCompatActivity {
         try {
             mjpegServer.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
             Log.d(TAG, "MJPEG server started on port 3014");
+            mjpegServer.setLatestFrame(null);
         } catch(IOException e) {
             Log.e(TAG, "An error occured " + e.getMessage());
         }
-
         EdgeToEdge.enable(this);
         setContentView(viewBinding.getRoot());
         cameraExecutor = Executors.newSingleThreadExecutor();
@@ -116,7 +117,11 @@ public class MainActivity extends AppCompatActivity {
             startCamera();
         }
         viewBinding.streamButton.setOnClickListener((e) -> {
-            startStream();
+            try {
+                captureStream();
+            } catch (IOException ex) {
+                throw new RuntimeException(ex);
+            }
         });
     }
 
@@ -153,21 +158,50 @@ public class MainActivity extends AppCompatActivity {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         yuvImage.compressToJpeg(new Rect(0, 0, width, height), 80, out);
 
+
         return out.toByteArray();
     }
 
-    private void startServer() {
-        new Thread(() -> {
-            try {
-                serverSocket = new ServerSocket(3013);
-                Log.d(TAG, "SERVER RUNNING ON PORT 3013");
-                clientSocket = serverSocket.accept();
-                Log.d(TAG, "Client connected: " + clientSocket.getInetAddress());
-                clientOut = clientSocket.getOutputStream();
-            } catch(Exception e) {
-                Log.e(TAG, "Server error: " + e.getMessage() );
+    public byte[] drawInformation(byte[] jpeg) {
+        Bitmap bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.length);
+        bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true);
+        Canvas canvas = new Canvas(bitmap);
+        Paint paint = new Paint();
+        paint.setTypeface(Typeface.DEFAULT_BOLD);
+
+        String dateText = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+                .format(new Date());
+        String batteryText = "BAT:" + Integer.toString(getBatteryLevel()) + "%";
+        // Outline
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(2);
+        paint.setColor(Color.BLACK);
+        canvas.drawText(dateText, 5, 20, paint);
+        canvas.drawText(batteryText, 5, 35, paint);
+        // Text fill
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(Color.WHITE);
+        canvas.drawText(dateText, 5, 20, paint);
+        canvas.drawText(batteryText, 5, 35, paint);
+
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out);
+        return out.toByteArray();
+    }
+
+    public int getBatteryLevel() {
+        IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        Intent batteryStatus = getApplicationContext().registerReceiver(null, filter);
+
+        if (batteryStatus != null) {
+            int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+            if (level != -1 && scale != -1) {
+                return (int) ((level / scale) * 100);
             }
-        }).start();
+        }
+        return -1;
     }
 
     private void startCamera() {
@@ -191,25 +225,41 @@ public class MainActivity extends AppCompatActivity {
         }, ContextCompat.getMainExecutor(this));
     }
 
-    private void startStream() {
+    private void captureStream() throws IOException {
         viewBinding.streamButton.setEnabled(false);
-        startServer();
+
         ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
                 .build();
         imageAnalysis.setAnalyzer(cameraExecutor, imageProxy -> {
             byte[] jpegBytes = convertYUVToJPEG(imageProxy);
             if (mjpegServer != null) {
-                mjpegServer.setLatestFrame(jpegBytes);
+                try {
+                    mjpegServer.setLatestFrame(drawInformation(jpegBytes));
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
             }
             imageProxy.close();
         });
-        CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
 
+        if (isStreaming) {
+            cameraProvider.unbindAll();
+            viewBinding.streamButton.setText(R.string.start_stream);
+            isStreaming = false;
+            mjpegServer.setLatestFrame(null);
+            viewBinding.streamButton.setEnabled(true);
+            return;
+        }
+
+        CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
         try {
             cameraProvider.bindToLifecycle(this, cameraSelector, imageAnalysis);
+            viewBinding.streamButton.setText(R.string.stop_stream);
+            isStreaming = true;
         } catch(Exception e) {
             Log.e(TAG, "Use case binding failed", e);
         }
+        viewBinding.streamButton.setEnabled(true);
     }
     private void requestPermissions() {
         activityResultLauncher.launch(REQUIRED_PERMISSIONS);
@@ -224,6 +274,8 @@ public class MainActivity extends AppCompatActivity {
        return true;
     }
 
+
+
     static {
         List<String> permissions = new ArrayList<>();
         permissions.add(Manifest.permission.CAMERA);
@@ -234,4 +286,7 @@ public class MainActivity extends AppCompatActivity {
         }
         REQUIRED_PERMISSIONS = permissions.toArray(new String[0]);
     }
+
+
+
 }

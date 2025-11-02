@@ -1,7 +1,11 @@
 package com.example.remotecamera.HttpHandler;
 
+import static androidx.camera.core.impl.utils.ContextUtil.getApplicationContext;
+
 import android.content.Context;
 import android.util.Log;
+
+import com.example.remotecamera.R;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -16,18 +20,36 @@ public class MJPEGServer extends NanoHTTPD {
     private static final String TAG = "MJPEGServer";
 
     private volatile byte[] latestFrame;
-    private Context context;
+    private final Context context;
 
+    private final Object frameLock = new Object();
     public MJPEGServer(int port, Context context) {
         super(port);
         this.context = context;
     }
 
     // Called from MainActivity whenever a new JPEG frame is ready
-    public void setLatestFrame(byte[] frame) {
-        latestFrame = frame;
+    public void setLatestFrame(byte[] frame) throws IOException {
+        if (frame != null) {
+            synchronized (frameLock) {
+                latestFrame = frame;
+                frameLock.notifyAll();
+            }
+        } else {
+            latestFrame = getNoCameraImage();
+        }
     }
 
+    private byte[] getNoCameraImage() throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        InputStream noCameraInputStream = context.getResources().openRawResource(R.raw.nocamera);
+        byte[] data = new byte[1024];
+        int nData;
+        while((nData = noCameraInputStream.read(data, 0, data.length)) != -1) {
+            buffer.write(data, 0, nData);
+        }
+        return buffer.toByteArray();
+    }
     @Override
     public Response serve(IHTTPSession session) {
         String uri = session.getUri();
@@ -36,7 +58,7 @@ public class MJPEGServer extends NanoHTTPD {
         } else if (uri.equals("/stream")) {
             return serveMJPEGStream();
         } else if (uri.equals("/mjpeg_style.css")) {
-            return serveCSS(session);
+            return serveCSS();
         }
         else {
             return newFixedLengthResponse(Response.Status.NOT_FOUND, NanoHTTPD.MIME_PLAINTEXT, "Not found");
@@ -59,11 +81,10 @@ public class MJPEGServer extends NanoHTTPD {
     }
    }
 
-   private Response serveCSS(IHTTPSession session) {
+   private Response serveCSS() {
         try {
             InputStream cssStream = context.getResources().openRawResource(
                     context.getResources().getIdentifier("mjpeg_style", "raw", context.getPackageName()));
-
             ByteArrayOutputStream baoStream = new ByteArrayOutputStream();
             byte[] buffer = new byte[1024];
             int read;
@@ -97,10 +118,12 @@ public class MJPEGServer extends NanoHTTPD {
             try {
                 while (true) {
                     byte[] frame = latestFrame;
-                    if (frame == null) {
-                        Thread.sleep(10); // wait for first frame, prevents Busy waiting
-                        continue;
+                    synchronized (frameLock) {
+                        if (frame == null) {
+                            frameLock.wait();
+                        }
                     }
+
 
                     // Write MJPEG frame
                     pipedOut.write(("--frame\r\n").getBytes());

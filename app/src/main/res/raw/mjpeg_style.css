@@ -1,7 +1,14 @@
 .dashboard {
-    display:flex;
+    display: flex;
     flex-direction: column;
     width: auto;
     height: auto;
     align-items: center;
+}
+
+.camera-controls button {
+    background-color: #0C2B4E;
+    border: white 1px solid;
+    border-radius: 4px;
+    padding:1rem;
 }
