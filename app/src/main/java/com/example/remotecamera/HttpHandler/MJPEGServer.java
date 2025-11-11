@@ -13,6 +13,7 @@ import java.io.InputStream;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import fi.iki.elonen.NanoHTTPD;
 
@@ -24,7 +25,7 @@ public class MJPEGServer extends NanoHTTPD {
     private final Context context;
 
     private final Object frameLock = new Object();
-    private MainActivity mainActivity;
+    private final MainActivity mainActivity;
     public MJPEGServer(int port, Activity mainActivity) {
         super(port);
         this.mainActivity = (MainActivity) mainActivity;
@@ -56,27 +57,32 @@ public class MJPEGServer extends NanoHTTPD {
     @Override
     public Response serve(IHTTPSession session) {
         String uri = session.getUri();
-        if (uri.equals("/toggleStream")) {
-            mainActivity.runOnUiThread(() -> {
-                try {
-                    mainActivity.toggleStream();
-                } catch (IOException e) {
-                    Log.e(TAG, Objects.requireNonNull(e.getMessage()));
+        AtomicBoolean isError = new AtomicBoolean(false);
+        switch (uri) {
+            case "/toggleStream":
+                mainActivity.runOnUiThread(() -> {
+                    try {
+                        mainActivity.toggleStream();
+                    } catch (IOException e) {
+                        isError.set(true);
+                        Log.e(TAG, Objects.requireNonNull(e.getMessage()));
+                    }
+                });
+                if (!isError.get()) {
+                    return newFixedLengthResponse(Response.Status.OK, "text/plain", "Stream request success");
+                } else {
+                    return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Stream request failed");
                 }
-            });
-            return newFixedLengthResponse(Response.Status.OK, "text/plain", "Stream requested");
-        }
-        if (uri.equals("/")) {
-            return serveHTMLPage(session);
-        } else if (uri.equals("/stream")) {
-            return serveMJPEGStream();
-        } else if (uri.equals("/mjpeg_style")) {
-            return serveCSS();
-        } else if (uri.equals("/script")) {
-            return serveJS();
-        }
-        else {
-            return newFixedLengthResponse(Response.Status.NOT_FOUND, NanoHTTPD.MIME_PLAINTEXT, "Not found");
+            case "/":
+                return serveHTMLPage(session);
+            case "/stream":
+                return serveMJPEGStream();
+            case "/mjpeg_style":
+                return serveCSS();
+            case "/script":
+                return serveJS();
+            default:
+                return newFixedLengthResponse(Response.Status.NOT_FOUND, NanoHTTPD.MIME_PLAINTEXT, "Not found");
         }
     }
 

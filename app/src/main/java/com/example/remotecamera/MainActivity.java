@@ -174,7 +174,7 @@ public class MainActivity extends AppCompatActivity {
             chargingStatus = "Plugged";
         }
 
-        String batteryText = "BAT:" + Integer.toString(getBatteryLevel()) + "%" + " " + chargingStatus;
+        String batteryText = "BAT:" + getBatteryLevel() + "%" + " " + chargingStatus;
         // Outline
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(2);
