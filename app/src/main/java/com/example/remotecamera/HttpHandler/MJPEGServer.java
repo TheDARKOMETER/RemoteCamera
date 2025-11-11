@@ -1,10 +1,10 @@
 package com.example.remotecamera.HttpHandler;
 
-import static androidx.camera.core.impl.utils.ContextUtil.getApplicationContext;
-
+import android.app.Activity;
 import android.content.Context;
 import android.util.Log;
 
+import com.example.remotecamera.MainActivity;
 import com.example.remotecamera.R;
 
 import java.io.ByteArrayOutputStream;
@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
+import java.util.Objects;
 
 import fi.iki.elonen.NanoHTTPD;
 
@@ -23,9 +24,11 @@ public class MJPEGServer extends NanoHTTPD {
     private final Context context;
 
     private final Object frameLock = new Object();
-    public MJPEGServer(int port, Context context) {
+    private MainActivity mainActivity;
+    public MJPEGServer(int port, Activity mainActivity) {
         super(port);
-        this.context = context;
+        this.mainActivity = (MainActivity) mainActivity;
+        this.context = mainActivity.getApplicationContext();
     }
 
     // Called from MainActivity whenever a new JPEG frame is ready
@@ -53,27 +56,56 @@ public class MJPEGServer extends NanoHTTPD {
     @Override
     public Response serve(IHTTPSession session) {
         String uri = session.getUri();
+        if (uri.equals("/toggleStream")) {
+            mainActivity.runOnUiThread(() -> {
+                try {
+                    mainActivity.toggleStream();
+                } catch (IOException e) {
+                    Log.e(TAG, Objects.requireNonNull(e.getMessage()));
+                }
+            });
+            return newFixedLengthResponse(Response.Status.OK, "text/plain", "Stream requested");
+        }
         if (uri.equals("/")) {
             return serveHTMLPage(session);
         } else if (uri.equals("/stream")) {
             return serveMJPEGStream();
-        } else if (uri.equals("/mjpeg_style.css")) {
+        } else if (uri.equals("/mjpeg_style")) {
             return serveCSS();
+        } else if (uri.equals("/script")) {
+            return serveJS();
         }
         else {
             return newFixedLengthResponse(Response.Status.NOT_FOUND, NanoHTTPD.MIME_PLAINTEXT, "Not found");
         }
     }
 
+    private Response serveJS() {
+        try (InputStream jsStream = context.getResources().openRawResource(R.raw.script);){
+            ByteArrayOutputStream jsBao = new ByteArrayOutputStream();
+            byte[] buffer = new byte[1024];
+            int read;
+            while ( ( read = jsStream.read(buffer) ) != -1 ) {
+                jsBao.write(buffer, 0, read);
+            }
+            String js = jsBao.toString("UTF-8");
+            jsStream.close();
+            jsBao.close();
+            return newFixedLengthResponse(Response.Status.OK, "application/javascript", js);
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to return JS script");
+            return newFixedLengthResponse("Failed to load JS");
+        }
+    }
+
     private Response serveHTMLPage(IHTTPSession session) {
     try {
-        InputStream htmlStream = context.getResources().openRawResource(
-                context.getResources().getIdentifier("mjpeg_page", "raw", context.getPackageName()));
-
+        InputStream htmlStream = context.getResources().openRawResource(R.raw.mjpeg_page);
         int size = htmlStream.available();
         byte[] buffer = new byte[size];
         htmlStream.read(buffer);
         String html = new String(buffer);
+        htmlStream.close();
         return newFixedLengthResponse(Response.Status.OK, "text/html", html);
     } catch (IOException e) {
         Log.e(TAG, "Failed to read HTML page: " + e.getMessage());
@@ -117,21 +149,16 @@ public class MJPEGServer extends NanoHTTPD {
         new Thread(() -> {
             try {
                 while (true) {
-                    byte[] frame = latestFrame;
-                    synchronized (frameLock) {
-                        if (frame == null) {
-                            frameLock.wait();
-                        }
+                    byte[] frameToSend;
+                    synchronized(frameLock) {
+                        frameToSend = latestFrame != null ? latestFrame : getNoCameraImage();
                     }
-
-
                     // Write MJPEG frame
                     pipedOut.write(("--frame\r\n").getBytes());
                     pipedOut.write("Content-Type: image/jpeg\r\n\r\n".getBytes());
-                    pipedOut.write(frame);
+                    pipedOut.write(frameToSend);
                     pipedOut.write("\r\n".getBytes());
                     pipedOut.flush();
-
                     Thread.sleep(33); // ~30 FPS
                 }
             } catch (IOException | InterruptedException e) {
@@ -140,7 +167,9 @@ public class MJPEGServer extends NanoHTTPD {
             }
         }).start();
 
-        return newChunkedResponse(Response.Status.OK,
+        Response response = newChunkedResponse(Response.Status.OK,
                 "multipart/x-mixed-replace; boundary=frame", pipedIn);
+        response.addHeader("Access-Control-Allow-Origin", "*");
+        return response;
     }
 }

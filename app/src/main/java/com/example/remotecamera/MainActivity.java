@@ -40,10 +40,6 @@ import com.google.common.util.concurrent.ListenableFuture;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.ServerSocket;
-import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -100,7 +96,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         viewBinding = ActivityMainBinding.inflate(getLayoutInflater());
-        mjpegServer = new MJPEGServer(3014, getApplicationContext());
+        mjpegServer = new MJPEGServer(3014, this);
         try {
             mjpegServer.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
             Log.d(TAG, "MJPEG server started on port 3014");
@@ -118,7 +114,7 @@ public class MainActivity extends AppCompatActivity {
         }
         viewBinding.streamButton.setOnClickListener((e) -> {
             try {
-                captureStream();
+                toggleStream();
             } catch (IOException ex) {
                 throw new RuntimeException(ex);
             }
@@ -163,15 +159,22 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public byte[] drawInformation(byte[] jpeg) {
+        String chargingStatus = "";
         Bitmap bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.length);
         bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true);
         Canvas canvas = new Canvas(bitmap);
         Paint paint = new Paint();
         paint.setTypeface(Typeface.DEFAULT_BOLD);
 
+
+
         String dateText = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
                 .format(new Date());
-        String batteryText = "BAT:" + Integer.toString(getBatteryLevel()) + "%";
+        if (isPhoneCharging() > 0) {
+            chargingStatus = "Plugged";
+        }
+
+        String batteryText = "BAT:" + Integer.toString(getBatteryLevel()) + "%" + " " + chargingStatus;
         // Outline
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(2);
@@ -183,8 +186,6 @@ public class MainActivity extends AppCompatActivity {
         paint.setColor(Color.WHITE);
         canvas.drawText(dateText, 5, 20, paint);
         canvas.drawText(batteryText, 5, 35, paint);
-
-
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out);
         return out.toByteArray();
@@ -198,8 +199,17 @@ public class MainActivity extends AppCompatActivity {
             int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
             int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
             if (level != -1 && scale != -1) {
-                return (int) ((level / scale) * 100);
+                return (int) ((level * 100f) / (float) scale);
             }
+        }
+        return -1;
+    }
+
+    public int isPhoneCharging() {
+        IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        Intent batteryStatus = getApplicationContext().registerReceiver(null, filter);
+        if (batteryStatus != null) {
+            return batteryStatus.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1);
         }
         return -1;
     }
@@ -213,19 +223,24 @@ public class MainActivity extends AppCompatActivity {
                 throw new RuntimeException(e);
             }
 
-            Preview preview = new Preview.Builder().build();
-            preview.setSurfaceProvider(viewBinding.viewFinder.getSurfaceProvider());
-            CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
-            try {
-                cameraProvider.unbindAll();
-                cameraProvider.bindToLifecycle(this,cameraSelector,preview);
-            } catch(Exception e) {
-                Log.e(TAG, "Use case binding failed", e);
-            }
+            bindPreviewUseCase(cameraProvider);
+
         }, ContextCompat.getMainExecutor(this));
     }
 
-    private void captureStream() throws IOException {
+    private void bindPreviewUseCase(ProcessCameraProvider pcp) {
+        Preview preview = new Preview.Builder().build();
+        preview.setSurfaceProvider(viewBinding.viewFinder.getSurfaceProvider());
+        CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
+        try {
+            cameraProvider.unbindAll();
+            cameraProvider.bindToLifecycle(this,cameraSelector,preview);
+        } catch(Exception e) {
+            Log.e(TAG, "Use case binding failed", e);
+        }
+    }
+
+    public void toggleStream() throws IOException {
         viewBinding.streamButton.setEnabled(false);
 
         ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
@@ -247,6 +262,7 @@ public class MainActivity extends AppCompatActivity {
             viewBinding.streamButton.setText(R.string.start_stream);
             isStreaming = false;
             mjpegServer.setLatestFrame(null);
+            bindPreviewUseCase(cameraProvider);
             viewBinding.streamButton.setEnabled(true);
             return;
         }

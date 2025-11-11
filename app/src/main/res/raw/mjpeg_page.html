@@ -1,18 +1,30 @@
 <!DOCTYPE html>
 <html language="en">
-    <head>
-        <link rel="stylesheet" href="/mjpeg_style.css"/>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Remote Camera</title>
-    </head>
-    <body>
-        <main class="dashboard">
-            <img src="/stream"/>
+
+<head>
+    <link rel="stylesheet" href="/mjpeg_style" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Remote Camera</title>
+</head>
+
+<body>
+    <main class="dashboard">
+        <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
+        <img id="mjpegStream" src="/stream" />
+        <div class="status-indicator" id="statusIndicator">Status: PLACEHOLDER</div>
+        <div class="control-wrapper">
             <div class="camera-controls">
-                <button onclick="alert('Debug')" class="">Record</button>
-                <button onclick="alert('Debug')" class="camera-controls">Capture Image</button>
+                <button id="recordBtn" onclick="startRecording()">Record</button>
+                <button id="stopBtn" onclick="stopRecording()" disabled>Stop Recording</button>
             </div>
-        </main>
-    </body>
+            <div class="phone-controls">
+                <button id="startCamBtn" onclick="toggleStream()">Start Camera</button>
+                <button id="stopCamBtn" onclick="toggleStream()" disabled>Stop Camera</button>
+            </div>
+        </div>
+    </main>
+</body>
+<script src="/script"></script>
+
 </html>

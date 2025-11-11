@@ -1,14 +1,49 @@
+/* Light theme for MJPEG streaming page */
+:root {
+    --text-color: black;
+    --bg-color: white;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --text-color: white;
+        --bg-color: #181a1b;
+        --button-bg: #1F4E8C;
+    }
+}
+
 .dashboard {
     display: flex;
     flex-direction: column;
     width: auto;
     height: auto;
     align-items: center;
+    gap: 3px;
 }
 
-.camera-controls button {
-    background-color: #0C2B4E;
-    border: white 1px solid;
+div.control-wrapper {
+    width: 640px;
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+}
+
+.control-wrapper button {
     border-radius: 4px;
-    padding:1rem;
+    padding: 1rem;
+    border: none;
+    color: var(--text-color);
+    background-color: var(--button-bg);
+}
+
+.control-wrapper button:disabled {
+    background-color: #555;
+    color: #ccc;
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+body {
+    background-color: var(--bg-color);
+    color: var(--text-color);
 }
