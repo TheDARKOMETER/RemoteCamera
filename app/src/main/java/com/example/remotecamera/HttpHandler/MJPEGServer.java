@@ -10,9 +10,18 @@ import com.example.remotecamera.R;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import fi.iki.elonen.NanoHTTPD;
@@ -81,10 +90,18 @@ public class MJPEGServer extends NanoHTTPD {
                 return serveCSS();
             case "/script":
                 return serveJS();
+            case "/streamStatus":
+                return serveStatus();
             default:
                 return newFixedLengthResponse(Response.Status.NOT_FOUND, NanoHTTPD.MIME_PLAINTEXT, "Not found");
         }
     }
+
+    private Response serveStatus() {
+        return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, Boolean.toString(mainActivity.isStreaming()));
+    }
+
+
 
     private Response serveJS() {
         try (InputStream jsStream = context.getResources().openRawResource(R.raw.script);){
@@ -178,4 +195,7 @@ public class MJPEGServer extends NanoHTTPD {
         response.addHeader("Access-Control-Allow-Origin", "*");
         return response;
     }
+
+
 }
+

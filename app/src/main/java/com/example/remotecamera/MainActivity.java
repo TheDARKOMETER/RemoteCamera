@@ -263,18 +263,17 @@ public class MainActivity extends AppCompatActivity {
             isStreaming = false;
             mjpegServer.setLatestFrame(null);
             bindPreviewUseCase(cameraProvider);
-            viewBinding.streamButton.setEnabled(true);
-            return;
+        } else {
+            CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
+            try {
+                cameraProvider.bindToLifecycle(this, cameraSelector, imageAnalysis);
+                viewBinding.streamButton.setText(R.string.stop_stream);
+                isStreaming = true;
+            } catch(Exception e) {
+                Log.e(TAG, "Use case binding failed", e);
+            }
         }
 
-        CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
-        try {
-            cameraProvider.bindToLifecycle(this, cameraSelector, imageAnalysis);
-            viewBinding.streamButton.setText(R.string.stop_stream);
-            isStreaming = true;
-        } catch(Exception e) {
-            Log.e(TAG, "Use case binding failed", e);
-        }
         viewBinding.streamButton.setEnabled(true);
     }
     private void requestPermissions() {
@@ -291,6 +290,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
 
+    public boolean isStreaming() {
+        return isStreaming;
+    }
 
     static {
         List<String> permissions = new ArrayList<>();

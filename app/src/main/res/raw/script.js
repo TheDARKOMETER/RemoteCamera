@@ -1,61 +1,72 @@
-const img = document.getElementById("mjpegStream");
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
-const recordBtn = document.getElementById("recordBtn");
-const stopBtn = document.getElementById("stopBtn");
-const startCamBtn = document.getElementById("startCamBtn");
-const stopCamBtn = document.getElementById("stopCamBtn");
-const statusText = document.getElementById("statusText");
-let recorder;
-let recordedChunks = [];
-let stop = false;
-let status = "idle";
-let master = true;
-let isStreaming = false;
-recordBtn.disabled = !isStreaming;
-stopBtn.disabled = !isStreaming && !stop;
-statusText.textContent = isStreaming ? "Streaming" : "Stopped";
+const img = document.getElementById("mjpegStream")
+const canvas = document.getElementById("canvas")
+const ctx = canvas.getContext("2d")
+const recordBtn = document.getElementById("recordBtn")
+const stopBtn = document.getElementById("stopBtn")
+const startCamBtn = document.getElementById("startCamBtn")
+const stopCamBtn = document.getElementById("stopCamBtn")
+const statusText = document.getElementById("statusText")
+let recorder
+let recordedChunks = []
+let stopped = true
+let isStreaming = false
+
+updateUI()
+
+function fetchStatus() {
+    fetch("/streamStatus", { method: "GET" })
+        .then(response => response.text())
+        .then(data => {
+            isStreaming = data === "true"
+            updateUI()
+        })
+        .catch(error => {
+            console.error("Error fetching status:", error)
+        })
+}
+
+fetchStatus()
+setInterval(fetchStatus, 250) 
+
 
 function startRecording() {
-    stop = false;
-    recordBtn.disabled = true;
-    stopBtn.disabled = false;
+    stopped = false
+    updateUI()
     // capture canvas stream
-    const stream = canvas.captureStream(30);
-    recorder = new MediaRecorder(stream, { mimeType: "video/webm; codecs=vp8" });
+    const stream = canvas.captureStream(30)
+    recorder = new MediaRecorder(stream, { mimeType: "video/webm; codecs=vp8" })
 
     recorder.ondataavailable = function (e) {
-        if (e.data.size > 0) recordedChunks.push(e.data);
-    };
+        if (e.data.size > 0) recordedChunks.push(e.data)
+    }
 
     recorder.onstop = function () {
-        const blob = new Blob(recordedChunks, { type: "video/webm" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'recording.webm';
-        a.click();
-        recordedChunks = [];
-    };
+        const blob = new Blob(recordedChunks, { type: "video/webm" })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = 'recording.webm'
+        a.click()
+        recordedChunks = []
+    }
 
 
     function draw() {
-        if (stop) return;
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        console.log("Drawing frame to canvas");
-        requestAnimationFrame(draw); // continuously call itself matching screen refresh rate
+        if (stopped) return
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+        console.log("Drawing frame to canvas")
+        requestAnimationFrame(draw) // continuously call itself matching screen refresh rate
     }
 
-    setInterval(draw, 33); // approx 30 FPS
-    recorder.start();
+    setInterval(draw, 33) // approx 30 FPS
+    recorder.start()
 }
 
 function stopRecording() {
-    stop = true;
-    recordBtn.disabled = false;
-    stopBtn.disabled = true;
+    stopped = true
+    updateUI()
     if (recorder && recorder.state === "recording") {
-        recorder.stop();
+        recorder.stop()
     }
 }
 
@@ -63,15 +74,27 @@ function toggleStream() {
     fetch("/toggleStream", { method: "GET" })
         .then(response => response.text())
         .then(data => {
-            console.log("Stream toggled:", data);
-            isStreaming = !isStreaming;
-            startCamBtn.disabled = isStreaming ? true : false;
-            stopCamBtn.disabled = isStreaming ? false : true;
-            recordBtn.disabled = isStreaming ? false : true;
-            statusText.textContent = isStreaming ? "Streaming" : "Stopped";
+            console.log("Stream toggled:", data)
+            isStreaming = !isStreaming
+            updateUI()
         })
         .catch(error => {
-            console.error("Error toggling stream:", error);
-            console.alert("Failed to toggle stream.");
-        });
+            console.error("Error toggling stream:", error)
+            console.alert("Failed to toggle stream.")
+        })
+}
+
+function updateUI() {
+    // Record button: enabled if not recording
+    recordBtn.disabled = !(stopped)
+
+    // stopped button: disabled if recording stopped
+    stopBtn.disabled = (stopped)  // or check recorder state if available
+
+    // Start/stopped camera buttons
+    startCamBtn.disabled = isStreaming
+    stopCamBtn.disabled = !isStreaming
+
+    // Status text
+    statusText.textContent = isStreaming ? (stopped ? "Streaming" : "Recording") : "Stopped"
 }
