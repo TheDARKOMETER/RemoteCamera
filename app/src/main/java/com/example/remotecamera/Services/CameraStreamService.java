@@ -4,6 +4,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Bitmap;
@@ -27,6 +28,7 @@ import androidx.annotation.Nullable;
 import androidx.camera.core.CameraSelector;
 import androidx.camera.core.ImageAnalysis;
 import androidx.camera.core.ImageProxy;
+import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
@@ -35,6 +37,7 @@ import androidx.lifecycle.LifecycleOwner;
 import androidx.lifecycle.LifecycleRegistry;
 
 import com.example.remotecamera.HttpHandler.MJPEGServer;
+import com.example.remotecamera.Interface.IStreamable;
 import com.example.remotecamera.R;
 import com.google.common.util.concurrent.ListenableFuture;
 
@@ -49,7 +52,7 @@ import java.util.concurrent.Executors;
 
 import fi.iki.elonen.NanoHTTPD;
 
-public class CameraStreamService extends Service {
+public class CameraStreamService extends Service implements IStreamable {
 
     private static final String TAG = "CameraFGService";
     private static final String CHANNEL_ID = "CameraForegroundChannel";
@@ -59,6 +62,12 @@ public class CameraStreamService extends Service {
     private CameraLifeCycleOwner lifeCycleOwner;
     private MJPEGServer mjpegServer;
     public static boolean isStreaming = false;
+    private static Preview.SurfaceProvider previewSurfaceProvider;
+
+    @Override
+    public Context getContext() {
+        return this;
+    }
 
     @Override
     public void onCreate() {
@@ -115,7 +124,7 @@ public class CameraStreamService extends Service {
         cameraProviderFuture.addListener(() -> {
             try {
                 cameraProvider = cameraProviderFuture.get();
-                bindCameraUseCase();
+                toggleStream();
             } catch (ExecutionException | InterruptedException e) {
                 Log.e(TAG, "CameraProvider failed", e);
             } catch (IOException e) {
@@ -124,7 +133,7 @@ public class CameraStreamService extends Service {
         }, ContextCompat.getMainExecutor(this));
     }
 
-    public void bindCameraUseCase() throws IOException {
+    public void toggleStream() throws IOException {
         lifeCycleOwner = new CameraLifeCycleOwner();
         lifeCycleOwner.start();
         ImageAnalysis imageAnalysis = new ImageAnalysis.Builder().build();
@@ -143,13 +152,15 @@ public class CameraStreamService extends Service {
             isStreaming = false;
             mjpegServer.setLatestFrame(null);
         }
-
+        Preview preview = new Preview.Builder().build();
+        preview.setSurfaceProvider(previewSurfaceProvider);
         CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
         try {
             cameraProvider.unbindAll();
             cameraProvider.bindToLifecycle(
                     lifeCycleOwner,
                     cameraSelector,
+                    preview,
                     imageAnalysis
             );
             isStreaming = true;
@@ -158,6 +169,9 @@ public class CameraStreamService extends Service {
         }
     }
 
+    public static void setPreviewSurfaceProvider(Preview.SurfaceProvider provider) {
+        previewSurfaceProvider = provider;
+    }
 
     public byte[] convertYUVToJPEG(ImageProxy image) {
         ImageProxy.PlaneProxy[] planes = image.getPlanes();
@@ -240,6 +254,7 @@ public class CameraStreamService extends Service {
         return -1;
     }
 
+    @Override
     public boolean isStreaming() {
         return isStreaming;
     }

@@ -70,17 +70,14 @@ function stopRecording() {
     }
 }
 
-function toggleStream() {
-    fetch("/toggleStream", { method: "GET" })
+function flashlight(state) {
+    fetch(`/flashlight?state=${state}`, { method: "GET" })
         .then(response => response.text())
         .then(data => {
-            console.log("Stream toggled:", data)
-            isStreaming = !isStreaming
-            updateUI()
+            console.log(data)
         })
         .catch(error => {
-            console.error("Error toggling stream:", error)
-            console.alert("Failed to toggle stream.")
+            console.error("Error toggling flashlight:", error)
         })
 }
 

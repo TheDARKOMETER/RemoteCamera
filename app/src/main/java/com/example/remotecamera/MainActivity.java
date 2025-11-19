@@ -74,6 +74,7 @@ public class MainActivity extends AppCompatActivity {
                     new ActivityResultCallback<Map<String, Boolean>>() {
                         @Override
                         public void onActivityResult(Map<String, Boolean> permissions) {
+                            Log.d(TAG, "Activity result callback called");
                             boolean permissionGranted = true;
                             for (Map.Entry<String,Boolean> entry : permissions.entrySet()) {
                                 String key = entry.getKey();
@@ -108,6 +109,8 @@ public class MainActivity extends AppCompatActivity {
         // Request permissions if needed
         if (!allPermissionsGranted()) {
             requestPermissions();
+        } else {
+            startCamera();
         }
 
         // Button click to toggle streaming service
@@ -126,6 +129,7 @@ public class MainActivity extends AppCompatActivity {
     private void startCameraService() {
         Log.d(TAG, "Starting camera service");
         Intent serviceIntent = new Intent(this, CameraStreamService.class);
+        CameraStreamService.setPreviewSurfaceProvider(getPreviewSurfaceProvider());
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent);
         } else {
@@ -158,13 +162,12 @@ public class MainActivity extends AppCompatActivity {
             } catch (ExecutionException | InterruptedException e) {
                 throw new RuntimeException(e);
             }
-
             bindPreviewUseCase(cameraProvider);
-
         }, ContextCompat.getMainExecutor(this));
     }
 
     private void bindPreviewUseCase(ProcessCameraProvider pcp) {
+        Log.d(TAG, "Starting camera and binding preview use case");
         Preview preview = new Preview.Builder().build();
         preview.setSurfaceProvider(viewBinding.viewFinder.getSurfaceProvider());
         CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
@@ -176,17 +179,21 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    public Preview.SurfaceProvider getPreviewSurfaceProvider() {
+        return viewBinding.viewFinder.getSurfaceProvider();
+    }
+
     private void requestPermissions() {
         activityResultLauncher.launch(REQUIRED_PERMISSIONS);
     }
 
     private boolean allPermissionsGranted() {
-       for (String permission : REQUIRED_PERMISSIONS) {
-           if (ContextCompat.checkSelfPermission(getBaseContext(), permission) != PackageManager.PERMISSION_GRANTED) {
-               return false;
-           }
-       }
-       return true;
+        for (String permission : REQUIRED_PERMISSIONS) {
+            if (ContextCompat.checkSelfPermission(getBaseContext(), permission) != PackageManager.PERMISSION_GRANTED) {
+                return false;
+            }
+        }
+        return true;
     }
 
     static {
