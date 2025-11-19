@@ -6,6 +6,7 @@ import android.util.Log;
 
 import com.example.remotecamera.MainActivity;
 import com.example.remotecamera.R;
+import com.example.remotecamera.Services.CameraStreamService;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -31,14 +32,12 @@ public class MJPEGServer extends NanoHTTPD {
     private static final String TAG = "MJPEGServer";
 
     private volatile byte[] latestFrame;
-    private final Context context;
 
     private final Object frameLock = new Object();
-    private final MainActivity mainActivity;
-    public MJPEGServer(int port, Activity mainActivity) {
+    private final CameraStreamService context;
+    public MJPEGServer(int port, CameraStreamService context) {
         super(port);
-        this.mainActivity = (MainActivity) mainActivity;
-        this.context = mainActivity.getApplicationContext();
+        this.context = context;
     }
 
     // Called from MainActivity whenever a new JPEG frame is ready
@@ -69,14 +68,12 @@ public class MJPEGServer extends NanoHTTPD {
         AtomicBoolean isError = new AtomicBoolean(false);
         switch (uri) {
             case "/toggleStream":
-                mainActivity.runOnUiThread(() -> {
                     try {
-                        mainActivity.toggleStream();
+                        context.bindCameraUseCase();
                     } catch (IOException e) {
                         isError.set(true);
                         Log.e(TAG, Objects.requireNonNull(e.getMessage()));
                     }
-                });
                 if (!isError.get()) {
                     return newFixedLengthResponse(Response.Status.OK, "text/plain", "Stream request success");
                 } else {
@@ -98,7 +95,7 @@ public class MJPEGServer extends NanoHTTPD {
     }
 
     private Response serveStatus() {
-        return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, Boolean.toString(mainActivity.isStreaming()));
+        return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, Boolean.toString(context.isStreaming()));
     }
 
 

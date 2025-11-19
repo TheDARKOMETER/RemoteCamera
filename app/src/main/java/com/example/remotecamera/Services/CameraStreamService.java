@@ -5,62 +5,265 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.ImageFormat;
+import android.graphics.Paint;
+import android.graphics.Rect;
+import android.graphics.Typeface;
+import android.graphics.YuvImage;
+import android.icu.text.SimpleDateFormat;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
+import android.util.Log;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.camera.core.CameraSelector;
+import androidx.camera.core.ImageAnalysis;
+import androidx.camera.core.ImageProxy;
+import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
+import androidx.lifecycle.Lifecycle;
+import androidx.lifecycle.LifecycleOwner;
+import androidx.lifecycle.LifecycleRegistry;
 
 import com.example.remotecamera.HttpHandler.MJPEGServer;
+import com.example.remotecamera.R;
+import com.google.common.util.concurrent.ListenableFuture;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.Date;
+import java.util.Locale;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import fi.iki.elonen.NanoHTTPD;
 
-// TODO
 public class CameraStreamService extends Service {
-    private static final String CHANNEL_ID = "camera_stream_channel";
-    private static final String TAG = "CameraStreamService";
+
+    private static final String TAG = "CameraFGService";
+    private static final String CHANNEL_ID = "CameraForegroundChannel";
+    private PowerManager.WakeLock wakeLock;
     private ExecutorService cameraExecutor;
+    private ProcessCameraProvider cameraProvider;
+    private CameraLifeCycleOwner lifeCycleOwner;
     private MJPEGServer mjpegServer;
+    public static boolean isStreaming = false;
+
+    @Override
+    public void onCreate() {
+        Log.d(TAG, "oncreate called");
+
+        super.onCreate();
+        // Keep CPU awake
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MyApp::CameraWakeLock");
+        wakeLock.acquire();
+
+        // Executor
+        cameraExecutor = Executors.newSingleThreadExecutor();
+
+        // Start MJPEG server
+        Log.d(TAG, "creating mjpeg server");
+        mjpegServer = new MJPEGServer(3014, this);
+        try {
+            mjpegServer.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
+            mjpegServer.setLatestFrame(null);
+        } catch (IOException e) {
+            Log.e(TAG, "MJPEG Server failed: " + e.getMessage());
+        }
+
+        // Start camera streaming
+        startCameraStreaming();
+
+        // Start foreground notification
+        startForegroundServiceNotification();
+    }
+
+
+    private void startForegroundServiceNotification() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    CHANNEL_ID,
+                    "Camera Streaming",
+                    NotificationManager.IMPORTANCE_LOW
+            );
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            if (manager != null) manager.createNotificationChannel(channel);
+        }
+
+        Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("Camera Streaming Active")
+                .setContentText("Your camera is streaming in the background")
+                .build();
+
+        startForeground(1, notification);
+    }
+
+    private void startCameraStreaming() {
+        ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
+        cameraProviderFuture.addListener(() -> {
+            try {
+                cameraProvider = cameraProviderFuture.get();
+                bindCameraUseCase();
+            } catch (ExecutionException | InterruptedException e) {
+                Log.e(TAG, "CameraProvider failed", e);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }, ContextCompat.getMainExecutor(this));
+    }
+
+    public void bindCameraUseCase() throws IOException {
+        lifeCycleOwner = new CameraLifeCycleOwner();
+        lifeCycleOwner.start();
+        ImageAnalysis imageAnalysis = new ImageAnalysis.Builder().build();
+        imageAnalysis.setAnalyzer(cameraExecutor, image -> {
+            byte[] jpeg = convertYUVToJPEG(image);
+            try {
+                mjpegServer.setLatestFrame(drawInformation(jpeg));
+            } catch (IOException e) {
+                Log.e(TAG, "Failed to update MJPEG frame", e);
+            }
+            image.close();
+        });
+
+        if (isStreaming()) {
+            cameraProvider.unbindAll();
+            isStreaming = false;
+            mjpegServer.setLatestFrame(null);
+        }
+
+        CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
+        try {
+            cameraProvider.unbindAll();
+            cameraProvider.bindToLifecycle(
+                    lifeCycleOwner,
+                    cameraSelector,
+                    imageAnalysis
+            );
+            isStreaming = true;
+        } catch (Exception e) {
+            Log.e(TAG, "Camera binding failed", e);
+        }
+    }
+
+
+    public byte[] convertYUVToJPEG(ImageProxy image) {
+        ImageProxy.PlaneProxy[] planes = image.getPlanes();
+        int width = image.getWidth();
+        int height = image.getHeight();
+
+        ByteBuffer yBuffer = planes[0].getBuffer();
+        ByteBuffer uBuffer = planes[1].getBuffer();
+        ByteBuffer vBuffer = planes[2].getBuffer();
+
+        int ySize = yBuffer.remaining();
+        int uSize = uBuffer.remaining();
+        int vSize = vBuffer.remaining();
+
+        byte[] nv21 = new byte[ySize + uSize + vSize];
+
+        yBuffer.get(nv21, 0, ySize);
+        int uvPos = ySize;
+        for (int i = 0; i < uSize; i++) {
+            nv21[uvPos++] = vBuffer.get(i); // V
+            nv21[uvPos++] = uBuffer.get(i); // U
+        }
+
+        // Convert to JPEG
+        YuvImage yuvImage = new YuvImage(nv21, ImageFormat.NV21, width, height, null);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        yuvImage.compressToJpeg(new Rect(0, 0, width, height), 80, out);
+        return out.toByteArray();
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        if (cameraExecutor != null) cameraExecutor.shutdown();
+        if (cameraProvider != null) cameraProvider.unbindAll();
+        if (mjpegServer != null) mjpegServer.stop();
+        if (lifeCycleOwner != null) lifeCycleOwner.stop();
+    }
+
+    public byte[] drawInformation(byte[] jpeg) {
+        String chargingStatus = "";
+        Bitmap bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.length);
+        bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true);
+        Canvas canvas = new Canvas(bitmap);
+        Paint paint = new Paint();
+        paint.setTypeface(Typeface.DEFAULT_BOLD);
+
+
+
+        String dateText = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+                .format(new Date());
+        if (isPhoneCharging() > 0) {
+            chargingStatus = "Plugged";
+        }
+
+        String batteryText = "BAT:" + getBatteryLevel() + "%" + " " + chargingStatus;
+        // Outline
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(2);
+        paint.setColor(Color.BLACK);
+        canvas.drawText(dateText, 5, 20, paint);
+        canvas.drawText(batteryText, 5, 35, paint);
+        // Text fill
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(Color.WHITE);
+        canvas.drawText(dateText, 5, 20, paint);
+        canvas.drawText(batteryText, 5, 35, paint);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out);
+        return out.toByteArray();
+    }
+
+    public int isPhoneCharging() {
+        IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        Intent batteryStatus = getApplicationContext().registerReceiver(null, filter);
+        if (batteryStatus != null) {
+            return batteryStatus.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1);
+        }
+        return -1;
+    }
+
+    public boolean isStreaming() {
+        return isStreaming;
+    }
+
+
+    public int getBatteryLevel() {
+        IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        Intent batteryStatus = getApplicationContext().registerReceiver(null, filter);
+
+        if (batteryStatus != null) {
+            int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+            if (level != -1 && scale != -1) {
+                return (int) ((level * 100f) / (float) scale);
+            }
+        }
+        return -1;
+    }
 
 
     @Nullable
     @Override
     public IBinder onBind(Intent intent) {
-        return null;
-    }
-
-    @Override
-    public void onCreate() {
-        super.onCreate();
-        createNotificationChannel();
-
-        Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("Remote Camera Streaming")
-                .setContentText("Streaming video over HTTP")
-                .setSmallIcon(android.R.drawable.ic_menu_camera)
-                .build();
-
-        startForeground(1, notification);
-        cameraExecutor = Executors.newSingleThreadExecutor();
-
-        //mjpegServer = new MJPEGServer(3014)
-
-    }
-
-    private void startCameraStream() {
-        cameraExecutor.execute(() -> {
-
-        });
-    }
-
-    private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(CHANNEL_ID,
-            "Camera Stream Service",
-                    NotificationManager.IMPORTANCE_LOW);
-            getSystemService(NotificationManager.class).createNotificationChannel(channel);
-        }
+        return null; // Not bound
     }
 }
+
