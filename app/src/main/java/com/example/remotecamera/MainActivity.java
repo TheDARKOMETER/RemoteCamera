@@ -66,6 +66,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String[] REQUIRED_PERMISSIONS;
 
     private ProcessCameraProvider cameraProvider;
+    private static boolean isStreaming = false;
 
 
     private final ActivityResultLauncher<String[]> activityResultLauncher =
@@ -115,21 +116,35 @@ public class MainActivity extends AppCompatActivity {
 
         // Button click to toggle streaming service
         viewBinding.streamButton.setOnClickListener(v -> {
-            if (isStreamingServiceRunning()) {
+            if (CameraStreamService.isStreaming) {
                 stopCameraService();
+                startCamera();
                 viewBinding.streamButton.setText(R.string.start_stream);
             } else {
-                startCameraService();
+                startCameraService(false);
                 viewBinding.streamButton.setText(R.string.stop_stream);
             }
         });
     }
 
 
-    private void startCameraService() {
+    @Override
+    protected void onPause() {
+        super.onPause();
+        if (CameraStreamService.isStreaming) {
+            stopCameraService();
+            startCameraService(true);
+        }
+    }
+
+    private void startCameraService(boolean isMinimized) {
         Log.d(TAG, "Starting camera service");
         Intent serviceIntent = new Intent(this, CameraStreamService.class);
-        CameraStreamService.setPreviewSurfaceProvider(getPreviewSurfaceProvider());
+        serviceIntent.putExtra("isMinimized", isMinimized);
+        if (!isMinimized) {
+            CameraStreamService.setPreviewSurfaceProvider(getPreviewSurfaceProvider());
+            startCamera();
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent);
         } else {
@@ -138,6 +153,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void stopCameraService() {
+        isStreaming = false;
         Intent serviceIntent = new Intent(this, CameraStreamService.class);
         stopService(serviceIntent);
     }
@@ -145,13 +161,22 @@ public class MainActivity extends AppCompatActivity {
     // Optional: check if the service is already running
     private boolean isStreamingServiceRunning() {
         // You can keep a static boolean in your service:
-        return CameraStreamService.isStreaming;
+        return isStreaming;
     }
 
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (CameraStreamService.isStreaming) {
+            stopCameraService();
+            startCameraService(false);
+        }
     }
 
     private void startCamera() {

@@ -31,6 +31,7 @@ import androidx.camera.core.ImageProxy;
 import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.core.app.NotificationCompat;
+import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 import androidx.lifecycle.Lifecycle;
 import androidx.lifecycle.LifecycleOwner;
@@ -63,6 +64,7 @@ public class CameraStreamService extends Service implements IStreamable {
     private MJPEGServer mjpegServer;
     public static boolean isStreaming = false;
     private static Preview.SurfaceProvider previewSurfaceProvider;
+    private boolean isMinimized = false;
 
     @Override
     public Context getContext() {
@@ -99,6 +101,15 @@ public class CameraStreamService extends Service implements IStreamable {
         startForegroundServiceNotification();
     }
 
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null) {
+            isMinimized = intent.getBooleanExtra("isMinimized", false);
+        }
+        isStreaming = true;
+        return START_REDELIVER_INTENT;
+    }
 
     private void startForegroundServiceNotification() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -152,17 +163,30 @@ public class CameraStreamService extends Service implements IStreamable {
             isStreaming = false;
             mjpegServer.setLatestFrame(null);
         }
-        Preview preview = new Preview.Builder().build();
-        preview.setSurfaceProvider(previewSurfaceProvider);
+
+        // If activity is stopping, remove preview use case
+
         CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
         try {
             cameraProvider.unbindAll();
-            cameraProvider.bindToLifecycle(
-                    lifeCycleOwner,
-                    cameraSelector,
-                    preview,
-                    imageAnalysis
-            );
+
+            if (!isMinimized) {
+                Preview preview = new Preview.Builder().build();
+                preview.setSurfaceProvider(previewSurfaceProvider);
+                cameraProvider.bindToLifecycle(
+                        lifeCycleOwner,
+                        cameraSelector,
+                        preview,
+                        imageAnalysis
+                );
+            } else {
+                cameraProvider.bindToLifecycle(
+                        lifeCycleOwner,
+                        cameraSelector,
+                        imageAnalysis
+                );
+            }
+
             isStreaming = true;
         } catch (Exception e) {
             Log.e(TAG, "Camera binding failed", e);
@@ -205,11 +229,19 @@ public class CameraStreamService extends Service implements IStreamable {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        isStreaming = false;
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (cameraExecutor != null) cameraExecutor.shutdown();
         if (cameraProvider != null) cameraProvider.unbindAll();
         if (mjpegServer != null) mjpegServer.stop();
         if (lifeCycleOwner != null) lifeCycleOwner.stop();
+    }
+
+
+    // Unsure when to use this
+    public void stopService() {
+        stopForeground(true);
+        stopSelf();
     }
 
     public byte[] drawInformation(byte[] jpeg) {

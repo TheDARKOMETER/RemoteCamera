@@ -4,6 +4,7 @@ import android.util.Log;
 
 import com.example.remotecamera.Interface.IStreamable;
 import com.example.remotecamera.R;
+import com.example.remotecamera.Services.Flashlight;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -25,9 +26,11 @@ public class MJPEGServer extends NanoHTTPD {
 
     private final Object frameLock = new Object();
     private final IStreamable streamableContext;
+    private Flashlight flashlight;
     public MJPEGServer(int port, IStreamable streamableContext) {
         super(port);
         this.streamableContext = streamableContext;
+        flashlight = new Flashlight(streamableContext.getContext());
     }
 
     // Called from MainActivity whenever a new JPEG frame is ready
@@ -56,7 +59,6 @@ public class MJPEGServer extends NanoHTTPD {
     public Response serve(IHTTPSession session) {
         String uri = session.getUri();
 
-
         switch (uri) {
             case "/":
                 return serveHTMLPage(session);
@@ -74,11 +76,14 @@ public class MJPEGServer extends NanoHTTPD {
                 if (params.containsKey("state")) {
                     state = params.get("state").get(0);
                 }
+                assert state != null;
                 if(state.equalsIgnoreCase("on")) {
                     // method for on flashlight
+                    flashlight.setFlashlight(true);
                     return newFixedLengthResponse("Flashlight turned on");
                 } else if (state.equalsIgnoreCase("off")) {
                     // method for off flashlight
+                    flashlight.setFlashlight(false);
                     return newFixedLengthResponse("Flashlight turned off");
                 } else {
                     return newFixedLengthResponse(Response.Status.BAD_REQUEST, NanoHTTPD.MIME_PLAINTEXT, "Invalid state");
@@ -184,6 +189,9 @@ public class MJPEGServer extends NanoHTTPD {
         Response response = newChunkedResponse(Response.Status.OK,
                 "multipart/x-mixed-replace; boundary=frame", pipedIn);
         response.addHeader("Access-Control-Allow-Origin", "*");
+        response.addHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        response.addHeader("Pragma", "no-cache");
+        response.addHeader("Expires", "0");
         return response;
     }
 

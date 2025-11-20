@@ -13,6 +13,14 @@ let isStreaming = false
 
 updateUI()
 
+img.src = "/stream" + "?t=" + new Date().getTime() // prevent caching
+img.onerror = function(e) {
+    console.log("Error loading MJPEG stream", e)
+    setTimeout(function() {
+        img.src = "/stream" + "?t=" + new Date().getTime()
+    }, 1000) // retry after 1 second
+}
+
 function fetchStatus() {
     fetch("/streamStatus", { method: "GET" })
         .then(response => response.text())
@@ -26,7 +34,7 @@ function fetchStatus() {
 }
 
 fetchStatus()
-setInterval(fetchStatus, 250) 
+setInterval(fetchStatus, 500) 
 
 
 function startRecording() {
@@ -87,10 +95,6 @@ function updateUI() {
 
     // stopped button: disabled if recording stopped
     stopBtn.disabled = (stopped)  // or check recorder state if available
-
-    // Start/stopped camera buttons
-    startCamBtn.disabled = isStreaming
-    stopCamBtn.disabled = !isStreaming
 
     // Status text
     statusText.textContent = isStreaming ? (stopped ? "Streaming" : "Recording") : "Stopped"
