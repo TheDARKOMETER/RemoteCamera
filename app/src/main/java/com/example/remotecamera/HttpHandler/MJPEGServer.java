@@ -30,10 +30,10 @@ public class MJPEGServer extends NanoHTTPD {
     public MJPEGServer(int port, IStreamable streamableContext) {
         super(port);
         this.streamableContext = streamableContext;
-        flashlight = new Flashlight(streamableContext.getContext());
+//        flashlight = new Flashlight(streamableContext.getContext());
     }
 
-    // Called from MainActivity whenever a new JPEG frame is ready
+    // Called  whenever a new JPEG frame is ready
     public void setLatestFrame(byte[] frame) throws IOException {
         if (frame != null) {
             synchronized (frameLock) {

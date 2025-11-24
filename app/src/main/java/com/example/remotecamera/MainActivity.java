@@ -1,25 +1,12 @@
 package com.example.remotecamera;
 
 import android.Manifest;
-import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.pm.PackageManager;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.ImageFormat;
-import android.graphics.Paint;
-import android.graphics.Rect;
-import android.graphics.Typeface;
-import android.graphics.YuvImage;
-import android.icu.text.SimpleDateFormat;
-import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.PowerManager;
 import android.util.Log;
+import android.view.SurfaceHolder;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
@@ -29,34 +16,23 @@ import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 
 import androidx.camera.core.CameraSelector;
-import androidx.camera.core.ImageAnalysis;
 
-import androidx.camera.core.ImageProxy;
 import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.core.content.ContextCompat;
 
 
+import com.example.remotecamera.Services.MJPEGWebService;
 import com.example.remotecamera.databinding.ActivityMainBinding;
 import com.google.common.util.concurrent.ListenableFuture;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Date;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
-import com.example.remotecamera.HttpHandler.MJPEGServer;
 import com.example.remotecamera.Services.CameraStreamService;
-
-import fi.iki.elonen.NanoHTTPD;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -67,7 +43,7 @@ public class MainActivity extends AppCompatActivity {
 
     private ProcessCameraProvider cameraProvider;
     private static boolean isStreaming = false;
-
+    private boolean isMinimized = false;
 
     private final ActivityResultLauncher<String[]> activityResultLauncher =
             registerForActivityResult(
@@ -90,7 +66,7 @@ public class MainActivity extends AppCompatActivity {
                                         "Permission request denied",
                                         Toast.LENGTH_SHORT).show();
                             } else {
-                                startCamera();
+                                startCameraPreview();
                             }
                         }
                     }
@@ -99,6 +75,9 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        // Start MJPEG Client Web Server
+        startWebService();
 
         // Inflate layout
         viewBinding = ActivityMainBinding.inflate(getLayoutInflater());
@@ -111,17 +90,17 @@ public class MainActivity extends AppCompatActivity {
         if (!allPermissionsGranted()) {
             requestPermissions();
         } else {
-            startCamera();
+            startCameraPreview();
         }
+
 
         // Button click to toggle streaming service
         viewBinding.streamButton.setOnClickListener(v -> {
             if (CameraStreamService.isStreaming) {
                 stopCameraService();
-                startCamera();
                 viewBinding.streamButton.setText(R.string.start_stream);
             } else {
-                startCameraService(false);
+                startCameraService();
                 viewBinding.streamButton.setText(R.string.stop_stream);
             }
         });
@@ -131,19 +110,23 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        isMinimized = true;
         if (CameraStreamService.isStreaming) {
             stopCameraService();
-            startCameraService(true);
+            startCameraService();
         }
     }
 
-    private void startCameraService(boolean isMinimized) {
+    private void startCameraService() {
         Log.d(TAG, "Starting camera service");
         Intent serviceIntent = new Intent(this, CameraStreamService.class);
         serviceIntent.putExtra("isMinimized", isMinimized);
+        Preview preview = new Preview.Builder().build();
+        preview.setSurfaceProvider(null);
+
         if (!isMinimized) {
             CameraStreamService.setPreviewSurfaceProvider(getPreviewSurfaceProvider());
-            startCamera();
+            startCameraPreview();
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent);
@@ -152,11 +135,17 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void stopCameraService() {
-        isStreaming = false;
-        Intent serviceIntent = new Intent(this, CameraStreamService.class);
-        stopService(serviceIntent);
+    private void startWebService() {
+        Log.d(TAG, "Main Activity starting Web Service");
+        Intent webServiceIntent = new Intent(this, MJPEGWebService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(webServiceIntent);
+        } else {
+            startService(webServiceIntent);
+        }
     }
+
+
 
     // Optional: check if the service is already running
     private boolean isStreamingServiceRunning() {
@@ -173,36 +162,56 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        isMinimized = false;
         if (CameraStreamService.isStreaming) {
             stopCameraService();
-            startCameraService(false);
+            startCameraService();
         }
     }
 
-    private void startCamera() {
+    private void stopCameraService() {
+        isStreaming = false;
+        Intent serviceIntent = new Intent(this, CameraStreamService.class);
+        stopService(serviceIntent);
+        if (!isMinimized) viewBinding.viewFinder.postDelayed(this::startCameraPreview, 50);
+
+    }
+
+    private void startCameraPreview() {
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
         cameraProviderFuture.addListener(() -> {
             try {
                 cameraProvider = cameraProviderFuture.get();
             } catch (ExecutionException | InterruptedException e) {
-                throw new RuntimeException(e);
+                Log.e(TAG, "Exception occurred", e);
             }
-            bindPreviewUseCase(cameraProvider);
+           // bindPreviewUseCase(cameraProvider);
+            Log.d(TAG, "Starting camera and binding preview use case");
+            Preview preview = new Preview.Builder().build();
+            preview.setSurfaceProvider(viewBinding.viewFinder.getSurfaceProvider());
+            CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
+            try {
+                cameraProvider.unbindAll();
+                cameraProvider.bindToLifecycle(this,cameraSelector,preview);
+            } catch(Exception e) {
+                Log.e(TAG, "Use case binding failed", e);
+            }
         }, ContextCompat.getMainExecutor(this));
     }
 
-    private void bindPreviewUseCase(ProcessCameraProvider pcp) {
-        Log.d(TAG, "Starting camera and binding preview use case");
-        Preview preview = new Preview.Builder().build();
-        preview.setSurfaceProvider(viewBinding.viewFinder.getSurfaceProvider());
-        CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
-        try {
-            cameraProvider.unbindAll();
-            cameraProvider.bindToLifecycle(this,cameraSelector,preview);
-        } catch(Exception e) {
-            Log.e(TAG, "Use case binding failed", e);
-        }
-    }
+
+//    private void bindPreviewUseCase(ProcessCameraProvider pcp) {
+//        Log.d(TAG, "Starting camera and binding preview use case");
+//        Preview preview = new Preview.Builder().build();
+//        preview.setSurfaceProvider(viewBinding.viewFinder.getSurfaceProvider());
+//        CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
+//        try {
+//            cameraProvider.unbindAll();
+//            cameraProvider.bindToLifecycle(this,cameraSelector,preview);
+//        } catch(Exception e) {
+//            Log.e(TAG, "Use case binding failed", e);
+//        }
+//    }
 
     public Preview.SurfaceProvider getPreviewSurfaceProvider() {
         return viewBinding.viewFinder.getSurfaceProvider();

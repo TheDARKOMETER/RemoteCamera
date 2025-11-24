@@ -11,7 +11,7 @@
 <body>
     <main class="dashboard">
         <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
-        <img id="mjpegStream" />
+        <img id="mjpegStream" src="/stream" />
         <div class="status-indicator" id="statusIndicator">Status: <span id="statusText"></span></div>
         <div class="control-wrapper">
             <div class="camera-controls">
@@ -19,8 +19,8 @@
                 <button id="stopBtn" onclick="stopRecording()" disabled>Stop Recording</button>
             </div>
             <div class="phone-controls">
-                <button id="startCamBtn" onclick="flashlight('on')">Turn On Flashlight</button>
-                <button id="stopCamBtn" onclick="flashlight('off')" disabled>Turn Off Flashlight</button>
+                <button id="startCamBtn" onclick="toggleStream()">Start Camera</button>
+                <button id="stopCamBtn" onclick="toggleStream()" disabled>Stop Camera</button>
             </div>
         </div>
     </main>

@@ -4,9 +4,11 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.ServiceConnection;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -53,7 +55,7 @@ import java.util.concurrent.Executors;
 
 import fi.iki.elonen.NanoHTTPD;
 
-public class CameraStreamService extends Service implements IStreamable {
+public class CameraStreamService extends Service {
 
     private static final String TAG = "CameraFGService";
     private static final String CHANNEL_ID = "CameraForegroundChannel";
@@ -61,41 +63,55 @@ public class CameraStreamService extends Service implements IStreamable {
     private ExecutorService cameraExecutor;
     private ProcessCameraProvider cameraProvider;
     private CameraLifeCycleOwner lifeCycleOwner;
-    private MJPEGServer mjpegServer;
     public static boolean isStreaming = false;
     private static Preview.SurfaceProvider previewSurfaceProvider;
     private boolean isMinimized = false;
 
-    @Override
+    private MJPEGWebService mjpegWebService;
+    private boolean isBound = false;
+
+    private final ServiceConnection connection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            MJPEGWebService.WebBinder wb = (MJPEGWebService.WebBinder) service;
+            mjpegWebService = wb.getService();
+            isBound = true;
+
+            // Start camera streaming
+            startCameraStreaming();
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            isBound = false;
+            mjpegWebService = null;
+        }
+    };
     public Context getContext() {
         return this;
     }
 
     @Override
     public void onCreate() {
-        Log.d(TAG, "oncreate called");
-
         super.onCreate();
         // Keep CPU awake
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MyApp::CameraWakeLock");
-        wakeLock.acquire();
+        wakeLock.acquire(Long.MAX_VALUE);
+
+
 
         // Executor
         cameraExecutor = Executors.newSingleThreadExecutor();
-
-        // Start MJPEG server
-        Log.d(TAG, "creating mjpeg server");
-        mjpegServer = new MJPEGServer(3014, this);
-        try {
-            mjpegServer.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
-            mjpegServer.setLatestFrame(null);
-        } catch (IOException e) {
-            Log.e(TAG, "MJPEG Server failed: " + e.getMessage());
+        if (mjpegWebService != null) {
+            try {
+                mjpegWebService.sendFrameToServer(null);
+            } catch (IOException e) {
+                Log.e(TAG, "MJPEG Server Frame Send failed: " + e.getMessage());
+            }
         }
 
-        // Start camera streaming
-        startCameraStreaming();
+
 
         // Start foreground notification
         startForegroundServiceNotification();
@@ -108,6 +124,8 @@ public class CameraStreamService extends Service implements IStreamable {
             isMinimized = intent.getBooleanExtra("isMinimized", false);
         }
         isStreaming = true;
+        Intent webServiceIntent = new Intent(this, MJPEGWebService.class);
+        bindService(webServiceIntent, connection, Context.BIND_AUTO_CREATE);
         return START_REDELIVER_INTENT;
     }
 
@@ -151,18 +169,22 @@ public class CameraStreamService extends Service implements IStreamable {
         imageAnalysis.setAnalyzer(cameraExecutor, image -> {
             byte[] jpeg = convertYUVToJPEG(image);
             try {
-                mjpegServer.setLatestFrame(drawInformation(jpeg));
+                mjpegWebService.sendFrameToServer(drawInformation(jpeg));
             } catch (IOException e) {
                 Log.e(TAG, "Failed to update MJPEG frame", e);
             }
             image.close();
         });
 
-        if (isStreaming()) {
-            cameraProvider.unbindAll();
-            isStreaming = false;
-            mjpegServer.setLatestFrame(null);
-        }
+//        if (isStreaming()) {
+//            cameraProvider.unbindAll();
+//            isStreaming = false;
+//            try {
+//                mjpegWebService.sendFrameToServer(null);
+//            } catch (IOException e) {
+//                Log.e(TAG, "Failed to update MJPEG frame", e);
+//            }
+//        }
 
         // If activity is stopping, remove preview use case
 
@@ -188,6 +210,7 @@ public class CameraStreamService extends Service implements IStreamable {
             }
 
             isStreaming = true;
+            mjpegWebService.setIsStreaming(true);
         } catch (Exception e) {
             Log.e(TAG, "Camera binding failed", e);
         }
@@ -230,11 +253,18 @@ public class CameraStreamService extends Service implements IStreamable {
     public void onDestroy() {
         super.onDestroy();
         isStreaming = false;
+        mjpegWebService.setIsStreaming(false);
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (cameraExecutor != null) cameraExecutor.shutdown();
         if (cameraProvider != null) cameraProvider.unbindAll();
-        if (mjpegServer != null) mjpegServer.stop();
         if (lifeCycleOwner != null) lifeCycleOwner.stop();
+        if (isBound) unbindService(connection);
+        try {
+            mjpegWebService.sendFrameToServer(null);
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to send frame to server", e);
+        }
+        stopService();
     }
 
 
@@ -243,6 +273,7 @@ public class CameraStreamService extends Service implements IStreamable {
         stopForeground(true);
         stopSelf();
     }
+
 
     public byte[] drawInformation(byte[] jpeg) {
         String chargingStatus = "";
@@ -286,7 +317,6 @@ public class CameraStreamService extends Service implements IStreamable {
         return -1;
     }
 
-    @Override
     public boolean isStreaming() {
         return isStreaming;
     }

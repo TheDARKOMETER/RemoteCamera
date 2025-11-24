@@ -13,14 +13,6 @@ let isStreaming = false
 
 updateUI()
 
-img.src = "/stream" + "?t=" + new Date().getTime() // prevent caching
-img.onerror = function(e) {
-    console.log("Error loading MJPEG stream", e)
-    setTimeout(function() {
-        img.src = "/stream" + "?t=" + new Date().getTime()
-    }, 1000) // retry after 1 second
-}
-
 function fetchStatus() {
     fetch("/streamStatus", { method: "GET" })
         .then(response => response.text())
@@ -86,6 +78,20 @@ function flashlight(state) {
         })
         .catch(error => {
             console.error("Error toggling flashlight:", error)
+        })
+}
+
+function toggleStream() {
+    fetch("/toggleStream", { method: "GET" })
+        .then(response => response.text())
+        .then(data => {
+            console.log("Stream toggled:", data)
+            isStreaming = !isStreaming
+            updateUI()
+        })
+        .catch(error => {
+            console.error("Error toggling stream:", error)
+            console.alert("Failed to toggle stream.")
         })
 }
 
