@@ -25,7 +25,6 @@ import android.os.IBinder;
 import android.os.PowerManager;
 import android.util.Log;
 
-import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.camera.core.CameraSelector;
 import androidx.camera.core.ImageAnalysis;
@@ -33,15 +32,9 @@ import androidx.camera.core.ImageProxy;
 import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.core.app.NotificationCompat;
-import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
-import androidx.lifecycle.Lifecycle;
-import androidx.lifecycle.LifecycleOwner;
-import androidx.lifecycle.LifecycleRegistry;
 
-import com.example.remotecamera.HttpHandler.MJPEGServer;
-import com.example.remotecamera.Interface.IStreamable;
-import com.example.remotecamera.R;
+import com.example.remotecamera.ServiceCallback.UIPublisher;
 import com.google.common.util.concurrent.ListenableFuture;
 
 import java.io.ByteArrayOutputStream;
@@ -52,8 +45,6 @@ import java.util.Locale;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-
-import fi.iki.elonen.NanoHTTPD;
 
 public class CameraStreamService extends Service {
 
@@ -66,9 +57,11 @@ public class CameraStreamService extends Service {
     public static boolean isStreaming = false;
     private static Preview.SurfaceProvider previewSurfaceProvider;
     private boolean isMinimized = false;
-
     private MJPEGWebService mjpegWebService;
     private boolean isBound = false;
+
+    private final UIPublisher uiPublisher = UIPublisher.getUIPublisherInstance();
+
 
     private final ServiceConnection connection = new ServiceConnection() {
         @Override
@@ -77,7 +70,7 @@ public class CameraStreamService extends Service {
             mjpegWebService = wb.getService();
             isBound = true;
 
-            // Start camera streaming
+            // Start camera service
             startCameraStreaming();
         }
 
@@ -87,6 +80,7 @@ public class CameraStreamService extends Service {
             mjpegWebService = null;
         }
     };
+
     public Context getContext() {
         return this;
     }
@@ -98,8 +92,6 @@ public class CameraStreamService extends Service {
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MyApp::CameraWakeLock");
         wakeLock.acquire(Long.MAX_VALUE);
-
-
 
         // Executor
         cameraExecutor = Executors.newSingleThreadExecutor();
@@ -124,6 +116,7 @@ public class CameraStreamService extends Service {
             isMinimized = intent.getBooleanExtra("isMinimized", false);
         }
         isStreaming = true;
+        uiPublisher.notifySubscribers();
         Intent webServiceIntent = new Intent(this, MJPEGWebService.class);
         bindService(webServiceIntent, connection, Context.BIND_AUTO_CREATE);
         return START_REDELIVER_INTENT;
@@ -146,6 +139,7 @@ public class CameraStreamService extends Service {
                 .build();
 
         startForeground(1, notification);
+
     }
 
     private void startCameraStreaming() {
@@ -153,7 +147,7 @@ public class CameraStreamService extends Service {
         cameraProviderFuture.addListener(() -> {
             try {
                 cameraProvider = cameraProviderFuture.get();
-                toggleStream();
+                startStream();
             } catch (ExecutionException | InterruptedException e) {
                 Log.e(TAG, "CameraProvider failed", e);
             } catch (IOException e) {
@@ -162,7 +156,7 @@ public class CameraStreamService extends Service {
         }, ContextCompat.getMainExecutor(this));
     }
 
-    public void toggleStream() throws IOException {
+    public void startStream() throws IOException {
         lifeCycleOwner = new CameraLifeCycleOwner();
         lifeCycleOwner.start();
         ImageAnalysis imageAnalysis = new ImageAnalysis.Builder().build();
@@ -176,22 +170,11 @@ public class CameraStreamService extends Service {
             image.close();
         });
 
-//        if (isStreaming()) {
-//            cameraProvider.unbindAll();
-//            isStreaming = false;
-//            try {
-//                mjpegWebService.sendFrameToServer(null);
-//            } catch (IOException e) {
-//                Log.e(TAG, "Failed to update MJPEG frame", e);
-//            }
-//        }
 
         // If activity is stopping, remove preview use case
-
         CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
         try {
             cameraProvider.unbindAll();
-
             if (!isMinimized) {
                 Preview preview = new Preview.Builder().build();
                 preview.setSurfaceProvider(previewSurfaceProvider);
@@ -210,7 +193,6 @@ public class CameraStreamService extends Service {
             }
 
             isStreaming = true;
-            mjpegWebService.setIsStreaming(true);
         } catch (Exception e) {
             Log.e(TAG, "Camera binding failed", e);
         }
@@ -253,7 +235,6 @@ public class CameraStreamService extends Service {
     public void onDestroy() {
         super.onDestroy();
         isStreaming = false;
-        mjpegWebService.setIsStreaming(false);
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (cameraExecutor != null) cameraExecutor.shutdown();
         if (cameraProvider != null) cameraProvider.unbindAll();
@@ -264,6 +245,7 @@ public class CameraStreamService extends Service {
         } catch (IOException e) {
             Log.e(TAG, "Failed to send frame to server", e);
         }
+        uiPublisher.notifySubscribers();
         stopService();
     }
 
@@ -273,7 +255,6 @@ public class CameraStreamService extends Service {
         stopForeground(true);
         stopSelf();
     }
-
 
     public byte[] drawInformation(byte[] jpeg) {
         String chargingStatus = "";

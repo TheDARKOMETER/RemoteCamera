@@ -6,7 +6,6 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
-import android.view.SurfaceHolder;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
@@ -22,6 +21,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.core.content.ContextCompat;
 
 
+import com.example.remotecamera.ServiceCallback.UIPublisher;
 import com.example.remotecamera.Services.MJPEGWebService;
 import com.example.remotecamera.databinding.ActivityMainBinding;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -42,8 +42,8 @@ public class MainActivity extends AppCompatActivity {
     private static final String[] REQUIRED_PERMISSIONS;
 
     private ProcessCameraProvider cameraProvider;
-    private static boolean isStreaming = false;
     private boolean isMinimized = false;
+    private final UIPublisher uiPublisher = UIPublisher.getUIPublisherInstance();
 
     private final ActivityResultLauncher<String[]> activityResultLauncher =
             registerForActivityResult(
@@ -93,15 +93,13 @@ public class MainActivity extends AppCompatActivity {
             startCameraPreview();
         }
 
-
+        uiPublisher.subscribe(this::updateUI);
         // Button click to toggle streaming service
         viewBinding.streamButton.setOnClickListener(v -> {
             if (CameraStreamService.isStreaming) {
                 stopCameraService();
-                viewBinding.streamButton.setText(R.string.start_stream);
             } else {
                 startCameraService();
-                viewBinding.streamButton.setText(R.string.stop_stream);
             }
         });
     }
@@ -111,6 +109,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onPause() {
         super.onPause();
         isMinimized = true;
+        uiPublisher.unsubscribe(this::updateUI);
         if (CameraStreamService.isStreaming) {
             stopCameraService();
             startCameraService();
@@ -146,31 +145,35 @@ public class MainActivity extends AppCompatActivity {
     }
 
 
-
-    // Optional: check if the service is already running
-    private boolean isStreamingServiceRunning() {
-        // You can keep a static boolean in your service:
-        return isStreaming;
-    }
-
-
     @Override
     protected void onDestroy() {
         super.onDestroy();
+    }
+
+    private void updateUI() {
+        if (CameraStreamService.isStreaming) {
+            viewBinding.streamButton.setText(R.string.stop_stream);
+        } else {
+            viewBinding.streamButton.setText(R.string.start_stream);
+        }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         isMinimized = false;
+        updateUI();
+        uiPublisher.subscribe(this::updateUI);
+        // Stop and start camera stream service to enable preview upon maximizing app again
         if (CameraStreamService.isStreaming) {
             stopCameraService();
             startCameraService();
+        } else {
+            startCameraPreview();
         }
     }
 
     private void stopCameraService() {
-        isStreaming = false;
         Intent serviceIntent = new Intent(this, CameraStreamService.class);
         stopService(serviceIntent);
         if (!isMinimized) viewBinding.viewFinder.postDelayed(this::startCameraPreview, 50);

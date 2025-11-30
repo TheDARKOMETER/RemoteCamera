@@ -15,11 +15,13 @@ import androidx.core.app.NotificationCompat;
 
 import com.example.remotecamera.HttpHandler.MJPEGServer;
 import com.example.remotecamera.Interface.IStreamable;
+import com.example.remotecamera.ServiceCallback.UIPublisher;
 
 import java.io.IOException;
 
 import fi.iki.elonen.NanoHTTPD;
 
+/* Starts FG Service that runs instance of MJPEG Server */
 public class MJPEGWebService extends Service implements IStreamable {
 
     private int port;
@@ -28,27 +30,20 @@ public class MJPEGWebService extends Service implements IStreamable {
     private static final String TAG = "WEBFGService";
     private final IBinder binder = new WebBinder();
 
-    private boolean isStreaming = false;
+    private final UIPublisher uiPublisher = UIPublisher.getUIPublisherInstance();
 
-    public class WebBinder extends Binder { MJPEGWebService getService() {return MJPEGWebService.this; }}
+
+    public class WebBinder extends Binder { public MJPEGWebService getService() {return MJPEGWebService.this; }}
 
     @Override
     public Context getContext() {
         return getApplicationContext();
     }
 
-    @Override
-    public void toggleStream() {
-
-    }
 
     @Override
     public boolean isStreaming() {
-        return isStreaming;
-    }
-
-    public void setIsStreaming(boolean isStreaming) {
-        this.isStreaming = isStreaming;
+        return CameraStreamService.isStreaming;
     }
 
     @Override
@@ -74,7 +69,6 @@ public class MJPEGWebService extends Service implements IStreamable {
         try {
             Log.d(TAG, "Starting web service on port" + port);
             mjpegServer.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
-            isStreaming = true;
         } catch (IOException e) {
             Log.e(TAG, "Exception occurred at MJPEGWebService", e);
         }

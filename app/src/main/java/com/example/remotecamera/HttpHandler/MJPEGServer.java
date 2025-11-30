@@ -1,9 +1,15 @@
 package com.example.remotecamera.HttpHandler;
 
+import android.content.ComponentName;
+import android.content.ServiceConnection;
+import android.os.IBinder;
 import android.util.Log;
+
+import androidx.core.app.ServiceCompat;
 
 import com.example.remotecamera.Interface.IStreamable;
 import com.example.remotecamera.R;
+import com.example.remotecamera.Services.CameraStreamService;
 import com.example.remotecamera.Services.Flashlight;
 
 import java.io.ByteArrayOutputStream;
@@ -27,10 +33,12 @@ public class MJPEGServer extends NanoHTTPD {
     private final Object frameLock = new Object();
     private final IStreamable streamableContext;
     private Flashlight flashlight;
+
     public MJPEGServer(int port, IStreamable streamableContext) {
         super(port);
         this.streamableContext = streamableContext;
-//        flashlight = new Flashlight(streamableContext.getContext());
+        flashlight = new Flashlight(streamableContext.getContext());
+        // TODO: Flashlight toggle functionality
     }
 
     // Called  whenever a new JPEG frame is ready
@@ -71,25 +79,32 @@ public class MJPEGServer extends NanoHTTPD {
             case "/streamStatus":
                 return serveStatus();
             case "/flashlight":
-                String state = null;
-                Map<String, List<String>> params = session.getParameters();
-                if (params.containsKey("state")) {
-                    state = params.get("state").get(0);
-                }
-                assert state != null;
-                if(state.equalsIgnoreCase("on")) {
-                    // method for on flashlight
-                    flashlight.setFlashlight(true);
-                    return newFixedLengthResponse("Flashlight turned on");
-                } else if (state.equalsIgnoreCase("off")) {
-                    // method for off flashlight
-                    flashlight.setFlashlight(false);
-                    return newFixedLengthResponse("Flashlight turned off");
-                } else {
-                    return newFixedLengthResponse(Response.Status.BAD_REQUEST, NanoHTTPD.MIME_PLAINTEXT, "Invalid state");
-                }
+                return toggleFlashlight(session);
+            case "/flashlightStatus":
+                return newFixedLengthResponse(Response.Status.OK, NanoHTTPD.MIME_PLAINTEXT, Boolean.toString(flashlight.getIsOn()));
             default:
                 return newFixedLengthResponse(Response.Status.NOT_FOUND, NanoHTTPD.MIME_PLAINTEXT, "Not found");
+        }
+    }
+
+
+    private Response toggleFlashlight(IHTTPSession session) {
+        String state = null;
+        Map<String, List<String>> params = session.getParameters();
+        if (params.containsKey("state")) {
+            state = Objects.requireNonNull(params.get("state")).get(0);
+        }
+        assert state != null;
+        if(state.equalsIgnoreCase("on")) {
+            // method for on flashlight
+            flashlight.setFlashlight(true);
+            return newFixedLengthResponse("on");
+        } else if (state.equalsIgnoreCase("off")) {
+            // method for off flashlight
+            flashlight.setFlashlight(false);
+            return newFixedLengthResponse("off");
+        } else {
+            return newFixedLengthResponse(Response.Status.BAD_REQUEST, NanoHTTPD.MIME_PLAINTEXT, "Invalid state");
         }
     }
 

@@ -9,6 +9,7 @@ public class Flashlight{
     private CameraManager cameraManager;
     private String cameraId;
 
+    private boolean isOn = false;
 
     public Flashlight(Context context) {
         cameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
@@ -16,7 +17,7 @@ public class Flashlight{
         try {
             for (String id : cameraManager.getCameraIdList()) {
                 Boolean hasFlash = cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
-                if (hasFlash != null & hasFlash) {
+                if (hasFlash != null && hasFlash) {
                     cameraId = id;
                     break;
                 }
@@ -27,6 +28,7 @@ public class Flashlight{
     }
 
     public void setFlashlight(boolean state) {
+        setIsOn(state);
         if (cameraId != null) {
             try {
                 cameraManager.setTorchMode(cameraId, state);
@@ -36,4 +38,11 @@ public class Flashlight{
         }
     }
 
+    public boolean getIsOn() {
+        return isOn;
+    }
+
+    public void setIsOn(boolean isOn) {
+        this.isOn = isOn;
+    }
 }
