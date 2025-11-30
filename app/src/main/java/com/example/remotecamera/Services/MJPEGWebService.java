@@ -4,18 +4,22 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.ServiceConnection;
 import android.os.Binder;
 import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
 
+import androidx.annotation.RequiresApi;
 import androidx.core.app.NotificationCompat;
 
 import com.example.remotecamera.HttpHandler.MJPEGServer;
 import com.example.remotecamera.Interface.IStreamable;
-import com.example.remotecamera.ServiceCallback.UIPublisher;
 
 import java.io.IOException;
 
@@ -29,9 +33,15 @@ public class MJPEGWebService extends Service implements IStreamable {
     private static final String CHANNEL_ID = "MJGPEGWebServerForegroundChannel";
     private static final String TAG = "WEBFGService";
     private final IBinder binder = new WebBinder();
+    private boolean flashlightState = false;
 
-    private final UIPublisher uiPublisher = UIPublisher.getUIPublisherInstance();
 
+    private final BroadcastReceiver flashlightStatusReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            flashlightState = intent.getBooleanExtra("flashlightStatus", false);
+        }
+    };
 
     public class WebBinder extends Binder { public MJPEGWebService getService() {return MJPEGWebService.this; }}
 
@@ -46,11 +56,15 @@ public class MJPEGWebService extends Service implements IStreamable {
         return CameraStreamService.isStreaming;
     }
 
+    @RequiresApi(api = Build.VERSION_CODES.O)
     @Override
     public void onCreate() {
         super.onCreate();
         Log.d(TAG, "MJPEGWebService onCreate called");
         startForegroundServiceNotification();
+
+        IntentFilter filter = new IntentFilter("com.remotecamera.FLASHLIGHT_STATUS");
+        registerReceiver(flashlightStatusReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
     }
 
     @Override
@@ -72,7 +86,24 @@ public class MJPEGWebService extends Service implements IStreamable {
         } catch (IOException e) {
             Log.e(TAG, "Exception occurred at MJPEGWebService", e);
         }
+
+
+
         return START_REDELIVER_INTENT;
+    }
+
+    @Override
+    public void setFlashlight(boolean state) {
+        Intent intent = new Intent("com.remotecamera.FLASHLIGHT_ACTION");
+        intent.setPackage(getPackageName());  // <-- THIS MAKES IT REACH THE NON-EXPORTED RECEIVERacka
+        intent.putExtra("flashlight", state);
+        Log.d(TAG, "Trying to send broadcast");
+        sendBroadcast(intent);
+    }
+
+    @Override
+    public boolean getFlashlightState() {
+        return flashlightState;
     }
 
     private void startForegroundServiceNotification() {
@@ -93,8 +124,6 @@ public class MJPEGWebService extends Service implements IStreamable {
     public void sendFrameToServer(byte[] frame) throws IOException {
         mjpegServer.setLatestFrame(frame);
     }
-
-
 
     public void stop() {
         mjpegServer.stop();

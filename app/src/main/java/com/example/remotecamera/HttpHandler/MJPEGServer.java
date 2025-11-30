@@ -1,16 +1,9 @@
 package com.example.remotecamera.HttpHandler;
 
-import android.content.ComponentName;
-import android.content.ServiceConnection;
-import android.os.IBinder;
 import android.util.Log;
-
-import androidx.core.app.ServiceCompat;
 
 import com.example.remotecamera.Interface.IStreamable;
 import com.example.remotecamera.R;
-import com.example.remotecamera.Services.CameraStreamService;
-import com.example.remotecamera.Services.Flashlight;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -19,7 +12,6 @@ import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import fi.iki.elonen.NanoHTTPD;
 import java.util.Map;
@@ -32,12 +24,10 @@ public class MJPEGServer extends NanoHTTPD {
 
     private final Object frameLock = new Object();
     private final IStreamable streamableContext;
-    private Flashlight flashlight;
 
     public MJPEGServer(int port, IStreamable streamableContext) {
         super(port);
         this.streamableContext = streamableContext;
-        flashlight = new Flashlight(streamableContext.getContext());
         // TODO: Flashlight toggle functionality
     }
 
@@ -81,7 +71,7 @@ public class MJPEGServer extends NanoHTTPD {
             case "/flashlight":
                 return toggleFlashlight(session);
             case "/flashlightStatus":
-                return newFixedLengthResponse(Response.Status.OK, NanoHTTPD.MIME_PLAINTEXT, Boolean.toString(flashlight.getIsOn()));
+                return newFixedLengthResponse(Response.Status.OK, NanoHTTPD.MIME_PLAINTEXT, Boolean.toString(streamableContext.getFlashlightState()));
             default:
                 return newFixedLengthResponse(Response.Status.NOT_FOUND, NanoHTTPD.MIME_PLAINTEXT, "Not found");
         }
@@ -97,11 +87,11 @@ public class MJPEGServer extends NanoHTTPD {
         assert state != null;
         if(state.equalsIgnoreCase("on")) {
             // method for on flashlight
-            flashlight.setFlashlight(true);
+            streamableContext.setFlashlight(true);
             return newFixedLengthResponse("on");
         } else if (state.equalsIgnoreCase("off")) {
             // method for off flashlight
-            flashlight.setFlashlight(false);
+            streamableContext.setFlashlight(false);
             return newFixedLengthResponse("off");
         } else {
             return newFixedLengthResponse(Response.Status.BAD_REQUEST, NanoHTTPD.MIME_PLAINTEXT, "Invalid state");

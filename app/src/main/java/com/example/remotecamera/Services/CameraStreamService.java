@@ -4,6 +4,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -20,12 +21,15 @@ import android.graphics.Typeface;
 import android.graphics.YuvImage;
 import android.icu.text.SimpleDateFormat;
 import android.os.BatteryManager;
+import android.os.Binder;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.util.Log;
 
 import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
+import androidx.camera.core.Camera;
 import androidx.camera.core.CameraSelector;
 import androidx.camera.core.ImageAnalysis;
 import androidx.camera.core.ImageProxy;
@@ -59,9 +63,38 @@ public class CameraStreamService extends Service {
     private boolean isMinimized = false;
     private MJPEGWebService mjpegWebService;
     private boolean isBound = false;
+    private boolean isOn = false;
 
     private final UIPublisher uiPublisher = UIPublisher.getUIPublisherInstance();
+    private final BroadcastReceiver flashlightReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            Log.d(TAG, "Received broadcast");
+            boolean state = intent.getBooleanExtra("flashlight", false);
+            setFlashlight(state);
 
+
+            Intent statusIntent = new Intent("com.remotecamera.FLASHLIGHT_STATUS");
+            statusIntent.setPackage(getPackageName());
+            statusIntent.putExtra("flashlightStatus", isOn);
+            sendBroadcast(statusIntent);
+        }
+    };
+
+    private Camera camera;
+
+    public class CameraBinder extends Binder {
+        public CameraStreamService getService() {
+            return CameraStreamService.this;
+        }
+    }
+    private final CameraBinder binder = new CameraBinder();
+
+    @Nullable
+    @Override
+    public IBinder onBind(Intent intent) {
+        return binder;
+    }
 
     private final ServiceConnection connection = new ServiceConnection() {
         @Override
@@ -69,6 +102,7 @@ public class CameraStreamService extends Service {
             MJPEGWebService.WebBinder wb = (MJPEGWebService.WebBinder) service;
             mjpegWebService = wb.getService();
             isBound = true;
+
 
             // Start camera service
             startCameraStreaming();
@@ -85,6 +119,7 @@ public class CameraStreamService extends Service {
         return this;
     }
 
+    @RequiresApi(api = Build.VERSION_CODES.TIRAMISU)
     @Override
     public void onCreate() {
         super.onCreate();
@@ -92,6 +127,10 @@ public class CameraStreamService extends Service {
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MyApp::CameraWakeLock");
         wakeLock.acquire(Long.MAX_VALUE);
+
+        // Receiver
+        IntentFilter filter = new IntentFilter("com.remotecamera.FLASHLIGHT_ACTION");
+        registerReceiver(flashlightReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
 
         // Executor
         cameraExecutor = Executors.newSingleThreadExecutor();
@@ -178,14 +217,14 @@ public class CameraStreamService extends Service {
             if (!isMinimized) {
                 Preview preview = new Preview.Builder().build();
                 preview.setSurfaceProvider(previewSurfaceProvider);
-                cameraProvider.bindToLifecycle(
+                camera = cameraProvider.bindToLifecycle(
                         lifeCycleOwner,
                         cameraSelector,
                         preview,
                         imageAnalysis
                 );
             } else {
-                cameraProvider.bindToLifecycle(
+                camera = cameraProvider.bindToLifecycle(
                         lifeCycleOwner,
                         cameraSelector,
                         imageAnalysis
@@ -202,11 +241,15 @@ public class CameraStreamService extends Service {
         previewSurfaceProvider = provider;
     }
 
-    public byte[] convertYUVToJPEG(ImageProxy image) {
-        ImageProxy.PlaneProxy[] planes = image.getPlanes();
-        int width = image.getWidth();
-        int height = image.getHeight();
+    public void setFlashlight(boolean state) {
+        isOn = state;
+        if (camera != null) {
+            camera.getCameraControl().enableTorch(state);
+        }
+    }
 
+    public byte[] YUV420toNV21(ImageProxy image) {
+        ImageProxy.PlaneProxy[] planes = image.getPlanes();
         ByteBuffer yBuffer = planes[0].getBuffer();
         ByteBuffer uBuffer = planes[1].getBuffer();
         ByteBuffer vBuffer = planes[2].getBuffer();
@@ -217,23 +260,55 @@ public class CameraStreamService extends Service {
 
         byte[] nv21 = new byte[ySize + uSize + vSize];
 
+        // Copy Y plane
         yBuffer.get(nv21, 0, ySize);
+
+        // Get U/V pixel stride
+        int pixelStride = planes[1].getPixelStride();
+        int rowStride = planes[1].getRowStride();
+        int width = image.getWidth();
+        int height = image.getHeight();
+
+        // Copy UV planes correctly
+        byte[] uBytes = new byte[uSize];
+        byte[] vBytes = new byte[vSize];
+        uBuffer.get(uBytes);
+        vBuffer.get(vBytes);
+
         int uvPos = ySize;
-        for (int i = 0; i < uSize; i++) {
-            nv21[uvPos++] = vBuffer.get(i); // V
-            nv21[uvPos++] = uBuffer.get(i); // U
+
+        for (int row = 0; row < height / 2; row++) {
+            for (int col = 0; col < width / 2; col++) {
+                int uIndex = row * rowStride + col * pixelStride;
+                int vIndex = row * rowStride + col * pixelStride;
+
+                nv21[uvPos++] = vBytes[vIndex]; // V
+                nv21[uvPos++] = uBytes[uIndex]; // U
+            }
         }
 
-        // Convert to JPEG
+        return nv21;
+
+    }
+
+    private byte[] convertYUVToJPEG(ImageProxy image) {
+        byte[] nv21 = YUV420toNV21(image);
+        int width = image.getWidth();
+        int height = image.getHeight();
+
         YuvImage yuvImage = new YuvImage(nv21, ImageFormat.NV21, width, height, null);
+
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         yuvImage.compressToJpeg(new Rect(0, 0, width, height), 80, out);
+
         return out.toByteArray();
+
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
+        unregisterReceiver(flashlightReceiver);
         isStreaming = false;
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (cameraExecutor != null) cameraExecutor.shutdown();
@@ -317,11 +392,5 @@ public class CameraStreamService extends Service {
         return -1;
     }
 
-
-    @Nullable
-    @Override
-    public IBinder onBind(Intent intent) {
-        return null; // Not bound
-    }
 }
 

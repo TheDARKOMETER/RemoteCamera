@@ -148,6 +148,12 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+
+        Intent cameraServiceIntent = new Intent(this, CameraStreamService.class);
+        stopService(cameraServiceIntent);
+
+        Intent webServiceIntent = new Intent(this, MJPEGWebService.class);
+        stopService(webServiceIntent);
     }
 
     private void updateUI() {

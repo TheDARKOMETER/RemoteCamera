@@ -28,10 +28,10 @@ public class Flashlight{
     }
 
     public void setFlashlight(boolean state) {
-        setIsOn(state);
         if (cameraId != null) {
             try {
                 cameraManager.setTorchMode(cameraId, state);
+                setIsOn(state);
             } catch (CameraAccessException e) {
                 e.printStackTrace();
             }
