@@ -1,47 +1,37 @@
 package com.example.remotecamera.HttpHandler;
 
-import android.app.Activity;
-import android.content.Context;
 import android.util.Log;
 
-import com.example.remotecamera.MainActivity;
+import com.example.remotecamera.Interface.IStreamable;
 import com.example.remotecamera.R;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import fi.iki.elonen.NanoHTTPD;
+import java.util.Map;
 
 public class MJPEGServer extends NanoHTTPD {
 
     private static final String TAG = "MJPEGServer";
 
     private volatile byte[] latestFrame;
-    private final Context context;
 
     private final Object frameLock = new Object();
-    private final MainActivity mainActivity;
-    public MJPEGServer(int port, Activity mainActivity) {
+    private final IStreamable streamableContext;
+
+    public MJPEGServer(int port, IStreamable streamableContext) {
         super(port);
-        this.mainActivity = (MainActivity) mainActivity;
-        this.context = mainActivity.getApplicationContext();
+        this.streamableContext = streamableContext;
+        // TODO: Flashlight toggle functionality
     }
 
-    // Called from MainActivity whenever a new JPEG frame is ready
+    // Called  whenever a new JPEG frame is ready
     public void setLatestFrame(byte[] frame) throws IOException {
         if (frame != null) {
             synchronized (frameLock) {
@@ -55,7 +45,7 @@ public class MJPEGServer extends NanoHTTPD {
 
     private byte[] getNoCameraImage() throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        InputStream noCameraInputStream = context.getResources().openRawResource(R.raw.nocamera);
+        InputStream noCameraInputStream = streamableContext.getContext().getResources().openRawResource(R.raw.nocamera);
         byte[] data = new byte[1024];
         int nData;
         while((nData = noCameraInputStream.read(data, 0, data.length)) != -1) {
@@ -66,22 +56,8 @@ public class MJPEGServer extends NanoHTTPD {
     @Override
     public Response serve(IHTTPSession session) {
         String uri = session.getUri();
-        AtomicBoolean isError = new AtomicBoolean(false);
+
         switch (uri) {
-            case "/toggleStream":
-                mainActivity.runOnUiThread(() -> {
-                    try {
-                        mainActivity.toggleStream();
-                    } catch (IOException e) {
-                        isError.set(true);
-                        Log.e(TAG, Objects.requireNonNull(e.getMessage()));
-                    }
-                });
-                if (!isError.get()) {
-                    return newFixedLengthResponse(Response.Status.OK, "text/plain", "Stream request success");
-                } else {
-                    return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Stream request failed");
-                }
             case "/":
                 return serveHTMLPage(session);
             case "/stream":
@@ -92,19 +68,44 @@ public class MJPEGServer extends NanoHTTPD {
                 return serveJS();
             case "/streamStatus":
                 return serveStatus();
+            case "/flashlight":
+                return toggleFlashlight(session);
+            case "/flashlightStatus":
+                return newFixedLengthResponse(Response.Status.OK, NanoHTTPD.MIME_PLAINTEXT, Boolean.toString(streamableContext.getFlashlightState()));
             default:
                 return newFixedLengthResponse(Response.Status.NOT_FOUND, NanoHTTPD.MIME_PLAINTEXT, "Not found");
         }
     }
 
+
+    private Response toggleFlashlight(IHTTPSession session) {
+        String state = null;
+        Map<String, List<String>> params = session.getParameters();
+        if (params.containsKey("state")) {
+            state = Objects.requireNonNull(params.get("state")).get(0);
+        }
+        assert state != null;
+        if(state.equalsIgnoreCase("on")) {
+            // method for on flashlight
+            streamableContext.setFlashlight(true);
+            return newFixedLengthResponse("on");
+        } else if (state.equalsIgnoreCase("off")) {
+            // method for off flashlight
+            streamableContext.setFlashlight(false);
+            return newFixedLengthResponse("off");
+        } else {
+            return newFixedLengthResponse(Response.Status.BAD_REQUEST, NanoHTTPD.MIME_PLAINTEXT, "Invalid state");
+        }
+    }
+
     private Response serveStatus() {
-        return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, Boolean.toString(mainActivity.isStreaming()));
+        return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, Boolean.toString(streamableContext.isStreaming()));
     }
 
 
 
     private Response serveJS() {
-        try (InputStream jsStream = context.getResources().openRawResource(R.raw.script);){
+        try (InputStream jsStream = streamableContext.getContext().getResources().openRawResource(R.raw.script);){
             ByteArrayOutputStream jsBao = new ByteArrayOutputStream();
             byte[] buffer = new byte[1024];
             int read;
@@ -123,7 +124,7 @@ public class MJPEGServer extends NanoHTTPD {
 
     private Response serveHTMLPage(IHTTPSession session) {
     try {
-        InputStream htmlStream = context.getResources().openRawResource(R.raw.mjpeg_page);
+        InputStream htmlStream = streamableContext.getContext().getResources().openRawResource(R.raw.mjpeg_page);
         int size = htmlStream.available();
         byte[] buffer = new byte[size];
         htmlStream.read(buffer);
@@ -138,8 +139,8 @@ public class MJPEGServer extends NanoHTTPD {
 
    private Response serveCSS() {
         try {
-            InputStream cssStream = context.getResources().openRawResource(
-                    context.getResources().getIdentifier("mjpeg_style", "raw", context.getPackageName()));
+            InputStream cssStream = streamableContext.getContext().getResources().openRawResource(
+                    streamableContext.getContext().getResources().getIdentifier("mjpeg_style", "raw", streamableContext.getContext().getPackageName()));
             ByteArrayOutputStream baoStream = new ByteArrayOutputStream();
             byte[] buffer = new byte[1024];
             int read;
@@ -193,6 +194,9 @@ public class MJPEGServer extends NanoHTTPD {
         Response response = newChunkedResponse(Response.Status.OK,
                 "multipart/x-mixed-replace; boundary=frame", pipedIn);
         response.addHeader("Access-Control-Allow-Origin", "*");
+        response.addHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        response.addHeader("Pragma", "no-cache");
+        response.addHeader("Expires", "0");
         return response;
     }
 

@@ -2,19 +2,7 @@ package com.example.remotecamera;
 
 import android.Manifest;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.pm.PackageManager;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.ImageFormat;
-import android.graphics.Paint;
-import android.graphics.Rect;
-import android.graphics.Typeface;
-import android.graphics.YuvImage;
-import android.icu.text.SimpleDateFormat;
-import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
@@ -27,44 +15,35 @@ import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 
 import androidx.camera.core.CameraSelector;
-import androidx.camera.core.ImageAnalysis;
 
-import androidx.camera.core.ImageProxy;
 import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.core.content.ContextCompat;
 
 
+import com.example.remotecamera.ServiceCallback.UIPublisher;
+import com.example.remotecamera.Services.MJPEGWebService;
 import com.example.remotecamera.databinding.ActivityMainBinding;
 import com.google.common.util.concurrent.ListenableFuture;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Date;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
-import com.example.remotecamera.HttpHandler.MJPEGServer;
-
-import fi.iki.elonen.NanoHTTPD;
+import com.example.remotecamera.Services.CameraStreamService;
 
 public class MainActivity extends AppCompatActivity {
 
     private ActivityMainBinding viewBinding;
+
     private static final String TAG = "RemoteCameraApp";
     private static final String[] REQUIRED_PERMISSIONS;
-    private ExecutorService cameraExecutor;
-    private static MJPEGServer mjpegServer;
-    private ProcessCameraProvider cameraProvider;
-    private boolean isStreaming = false;
 
+    private ProcessCameraProvider cameraProvider;
+    private boolean isMinimized = false;
+    private final UIPublisher uiPublisher = UIPublisher.getUIPublisherInstance();
 
     private final ActivityResultLauncher<String[]> activityResultLauncher =
             registerForActivityResult(
@@ -72,6 +51,7 @@ public class MainActivity extends AppCompatActivity {
                     new ActivityResultCallback<Map<String, Boolean>>() {
                         @Override
                         public void onActivityResult(Map<String, Boolean> permissions) {
+                            Log.d(TAG, "Activity result callback called");
                             boolean permissionGranted = true;
                             for (Map.Entry<String,Boolean> entry : permissions.entrySet()) {
                                 String key = entry.getKey();
@@ -86,7 +66,7 @@ public class MainActivity extends AppCompatActivity {
                                         "Permission request denied",
                                         Toast.LENGTH_SHORT).show();
                             } else {
-                                startCamera();
+                                startCameraPreview();
                             }
                         }
                     }
@@ -95,203 +75,168 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        // Start MJPEG Client Web Server
+        startWebService();
+
+        // Inflate layout
         viewBinding = ActivityMainBinding.inflate(getLayoutInflater());
-        mjpegServer = new MJPEGServer(3014, this);
-        try {
-            mjpegServer.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
-            Log.d(TAG, "MJPEG server started on port 3014");
-            mjpegServer.setLatestFrame(null);
-        } catch(IOException e) {
-            Log.e(TAG, "An error occured " + e.getMessage());
-        }
-        EdgeToEdge.enable(this);
         setContentView(viewBinding.getRoot());
-        cameraExecutor = Executors.newSingleThreadExecutor();
+
+        // Enable edge-to-edge UI
+        EdgeToEdge.enable(this);
+
+        // Request permissions if needed
         if (!allPermissionsGranted()) {
             requestPermissions();
         } else {
-            startCamera();
+            startCameraPreview();
         }
-        viewBinding.streamButton.setOnClickListener((e) -> {
-            try {
-                toggleStream();
-            } catch (IOException ex) {
-                throw new RuntimeException(ex);
+
+        uiPublisher.subscribe(this::updateUI);
+        // Button click to toggle streaming service
+        viewBinding.streamButton.setOnClickListener(v -> {
+            if (CameraStreamService.isStreaming) {
+                stopCameraService();
+            } else {
+                startCameraService();
             }
         });
     }
 
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        isMinimized = true;
+        uiPublisher.unsubscribe(this::updateUI);
+        if (CameraStreamService.isStreaming) {
+            stopCameraService();
+            startCameraService();
+        }
+    }
+
+    private void startCameraService() {
+        Log.d(TAG, "Starting camera service");
+        Intent serviceIntent = new Intent(this, CameraStreamService.class);
+        serviceIntent.putExtra("isMinimized", isMinimized);
+        Preview preview = new Preview.Builder().build();
+        preview.setSurfaceProvider(null);
+
+        if (!isMinimized) {
+            CameraStreamService.setPreviewSurfaceProvider(getPreviewSurfaceProvider());
+            startCameraPreview();
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent);
+        } else {
+            startService(serviceIntent);
+        }
+    }
+
+    private void startWebService() {
+        Log.d(TAG, "Main Activity starting Web Service");
+        Intent webServiceIntent = new Intent(this, MJPEGWebService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(webServiceIntent);
+        } else {
+            startService(webServiceIntent);
+        }
+    }
+
+
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        cameraExecutor.shutdown();
+
+        Intent cameraServiceIntent = new Intent(this, CameraStreamService.class);
+        stopService(cameraServiceIntent);
+
+        Intent webServiceIntent = new Intent(this, MJPEGWebService.class);
+        stopService(webServiceIntent);
     }
 
-    public byte[] convertYUVToJPEG(ImageProxy image) {
-        ImageProxy.PlaneProxy[] planes = image.getPlanes();
-        int width = image.getWidth();
-        int height = image.getHeight();
-
-        ByteBuffer yBuffer = planes[0].getBuffer();
-        ByteBuffer uBuffer = planes[1].getBuffer();
-        ByteBuffer vBuffer = planes[2].getBuffer();
-
-        int ySize = yBuffer.remaining();
-        int uSize = uBuffer.remaining();
-        int vSize = vBuffer.remaining();
-
-        byte[] nv21 = new byte[ySize + uSize + vSize];
-
-        yBuffer.get(nv21, 0, ySize);
-        int uvPos = ySize;
-        for (int i = 0; i < uSize; i++) {
-            nv21[uvPos++] = vBuffer.get(i); // V
-            nv21[uvPos++] = uBuffer.get(i); // U
+    private void updateUI() {
+        if (CameraStreamService.isStreaming) {
+            viewBinding.streamButton.setText(R.string.stop_stream);
+        } else {
+            viewBinding.streamButton.setText(R.string.start_stream);
         }
-
-        // Convert to JPEG
-        YuvImage yuvImage = new YuvImage(nv21, ImageFormat.NV21, width, height, null);
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        yuvImage.compressToJpeg(new Rect(0, 0, width, height), 80, out);
-
-
-        return out.toByteArray();
     }
 
-    public byte[] drawInformation(byte[] jpeg) {
-        String chargingStatus = "";
-        Bitmap bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.length);
-        bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true);
-        Canvas canvas = new Canvas(bitmap);
-        Paint paint = new Paint();
-        paint.setTypeface(Typeface.DEFAULT_BOLD);
-
-
-
-        String dateText = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-                .format(new Date());
-        if (isPhoneCharging() > 0) {
-            chargingStatus = "Plugged";
+    @Override
+    protected void onResume() {
+        super.onResume();
+        isMinimized = false;
+        updateUI();
+        uiPublisher.subscribe(this::updateUI);
+        // Stop and start camera stream service to enable preview upon maximizing app again
+        if (CameraStreamService.isStreaming) {
+            stopCameraService();
+            startCameraService();
+        } else {
+            startCameraPreview();
         }
-
-        String batteryText = "BAT:" + getBatteryLevel() + "%" + " " + chargingStatus;
-        // Outline
-        paint.setStyle(Paint.Style.STROKE);
-        paint.setStrokeWidth(2);
-        paint.setColor(Color.BLACK);
-        canvas.drawText(dateText, 5, 20, paint);
-        canvas.drawText(batteryText, 5, 35, paint);
-        // Text fill
-        paint.setStyle(Paint.Style.FILL);
-        paint.setColor(Color.WHITE);
-        canvas.drawText(dateText, 5, 20, paint);
-        canvas.drawText(batteryText, 5, 35, paint);
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out);
-        return out.toByteArray();
     }
 
-    public int getBatteryLevel() {
-        IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
-        Intent batteryStatus = getApplicationContext().registerReceiver(null, filter);
+    private void stopCameraService() {
+        Intent serviceIntent = new Intent(this, CameraStreamService.class);
+        stopService(serviceIntent);
+        if (!isMinimized) viewBinding.viewFinder.postDelayed(this::startCameraPreview, 50);
 
-        if (batteryStatus != null) {
-            int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
-            int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
-            if (level != -1 && scale != -1) {
-                return (int) ((level * 100f) / (float) scale);
-            }
-        }
-        return -1;
     }
 
-    public int isPhoneCharging() {
-        IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
-        Intent batteryStatus = getApplicationContext().registerReceiver(null, filter);
-        if (batteryStatus != null) {
-            return batteryStatus.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1);
-        }
-        return -1;
-    }
-
-    private void startCamera() {
+    private void startCameraPreview() {
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
         cameraProviderFuture.addListener(() -> {
             try {
                 cameraProvider = cameraProviderFuture.get();
             } catch (ExecutionException | InterruptedException e) {
-                throw new RuntimeException(e);
+                Log.e(TAG, "Exception occurred", e);
             }
-
-            bindPreviewUseCase(cameraProvider);
-
-        }, ContextCompat.getMainExecutor(this));
-    }
-
-    private void bindPreviewUseCase(ProcessCameraProvider pcp) {
-        Preview preview = new Preview.Builder().build();
-        preview.setSurfaceProvider(viewBinding.viewFinder.getSurfaceProvider());
-        CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
-        try {
-            cameraProvider.unbindAll();
-            cameraProvider.bindToLifecycle(this,cameraSelector,preview);
-        } catch(Exception e) {
-            Log.e(TAG, "Use case binding failed", e);
-        }
-    }
-
-    public void toggleStream() throws IOException {
-        viewBinding.streamButton.setEnabled(false);
-
-        ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
-                .build();
-        imageAnalysis.setAnalyzer(cameraExecutor, imageProxy -> {
-            byte[] jpegBytes = convertYUVToJPEG(imageProxy);
-            if (mjpegServer != null) {
-                try {
-                    mjpegServer.setLatestFrame(drawInformation(jpegBytes));
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
-                }
-            }
-            imageProxy.close();
-        });
-
-        if (isStreaming) {
-            cameraProvider.unbindAll();
-            viewBinding.streamButton.setText(R.string.start_stream);
-            isStreaming = false;
-            mjpegServer.setLatestFrame(null);
-            bindPreviewUseCase(cameraProvider);
-        } else {
+           // bindPreviewUseCase(cameraProvider);
+            Log.d(TAG, "Starting camera and binding preview use case");
+            Preview preview = new Preview.Builder().build();
+            preview.setSurfaceProvider(viewBinding.viewFinder.getSurfaceProvider());
             CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
             try {
-                cameraProvider.bindToLifecycle(this, cameraSelector, imageAnalysis);
-                viewBinding.streamButton.setText(R.string.stop_stream);
-                isStreaming = true;
+                cameraProvider.unbindAll();
+                cameraProvider.bindToLifecycle(this,cameraSelector,preview);
             } catch(Exception e) {
                 Log.e(TAG, "Use case binding failed", e);
             }
-        }
-
-        viewBinding.streamButton.setEnabled(true);
+        }, ContextCompat.getMainExecutor(this));
     }
+
+
+//    private void bindPreviewUseCase(ProcessCameraProvider pcp) {
+//        Log.d(TAG, "Starting camera and binding preview use case");
+//        Preview preview = new Preview.Builder().build();
+//        preview.setSurfaceProvider(viewBinding.viewFinder.getSurfaceProvider());
+//        CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
+//        try {
+//            cameraProvider.unbindAll();
+//            cameraProvider.bindToLifecycle(this,cameraSelector,preview);
+//        } catch(Exception e) {
+//            Log.e(TAG, "Use case binding failed", e);
+//        }
+//    }
+
+    public Preview.SurfaceProvider getPreviewSurfaceProvider() {
+        return viewBinding.viewFinder.getSurfaceProvider();
+    }
+
     private void requestPermissions() {
         activityResultLauncher.launch(REQUIRED_PERMISSIONS);
     }
 
     private boolean allPermissionsGranted() {
-       for (String permission : REQUIRED_PERMISSIONS) {
-           if (ContextCompat.checkSelfPermission(getBaseContext(), permission) != PackageManager.PERMISSION_GRANTED) {
-               return false;
-           }
-       }
-       return true;
-    }
-
-
-    public boolean isStreaming() {
-        return isStreaming;
+        for (String permission : REQUIRED_PERMISSIONS) {
+            if (ContextCompat.checkSelfPermission(getBaseContext(), permission) != PackageManager.PERMISSION_GRANTED) {
+                return false;
+            }
+        }
+        return true;
     }
 
     static {
