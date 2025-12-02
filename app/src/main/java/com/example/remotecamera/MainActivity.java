@@ -1,8 +1,15 @@
 package com.example.remotecamera;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.ConnectivityManager;
+import android.net.InetAddresses;
+import android.net.LinkAddress;
+import android.net.LinkProperties;
+import android.net.Network;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
@@ -26,6 +33,8 @@ import com.example.remotecamera.Services.MJPEGWebService;
 import com.example.remotecamera.databinding.ActivityMainBinding;
 import com.google.common.util.concurrent.ListenableFuture;
 
+import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -43,6 +52,7 @@ public class MainActivity extends AppCompatActivity {
 
     private ProcessCameraProvider cameraProvider;
     private boolean isMinimized = false;
+    public int port;
     private final UIPublisher uiPublisher = UIPublisher.getUIPublisherInstance();
 
     private final ActivityResultLauncher<String[]> activityResultLauncher =
@@ -76,8 +86,11 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // Intialize default port of 3014
+        port = 3014;
+
         // Start MJPEG Client Web Server
-        startWebService();
+        startWebService(port);
 
         // Inflate layout
         viewBinding = ActivityMainBinding.inflate(getLayoutInflater());
@@ -102,8 +115,24 @@ public class MainActivity extends AppCompatActivity {
                 startCameraService();
             }
         });
+
+        viewBinding.settingButton.setOnClickListener(v -> {
+            new SettingsDialog().show(getSupportFragmentManager(), "SettingsDialog");
+        });
     }
 
+
+    public void changePort(int port) {
+        // Stop running web service first
+        Intent intent = new Intent(this, MJPEGWebService.class);
+        stopService(intent);
+
+        this.port = port;
+        Toast.makeText(getApplicationContext(), "Changing port to " + port, Toast.LENGTH_SHORT).show();
+        startWebService(this.port);
+        uiPublisher.notifySubscribers();
+
+    }
 
     @Override
     protected void onPause() {
@@ -134,9 +163,10 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void startWebService() {
+    private void startWebService(int port) {
         Log.d(TAG, "Main Activity starting Web Service");
         Intent webServiceIntent = new Intent(this, MJPEGWebService.class);
+        webServiceIntent.putExtra("port", port);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(webServiceIntent);
         } else {
@@ -150,7 +180,9 @@ public class MainActivity extends AppCompatActivity {
         super.onDestroy();
     }
 
+    @SuppressLint("SetTextI18n")
     private void updateUI() {
+        viewBinding.clientAddress.setText("http://" + getLocalIpAddress() + ":" +  port);
         if (CameraStreamService.isStreaming) {
             viewBinding.streamButton.setText(R.string.stop_stream);
         } else {
@@ -225,6 +257,25 @@ public class MainActivity extends AppCompatActivity {
 //            Log.e(TAG, "Use case binding failed", e);
 //        }
 //    }
+
+
+    public String getLocalIpAddress() {
+        ConnectivityManager connectivityManager = (ConnectivityManager) getApplicationContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+        Network network = connectivityManager.getActiveNetwork();
+
+        if (network == null) return null;
+
+        LinkProperties properties = connectivityManager.getLinkProperties(network);
+        if (properties == null) return null;
+
+        for (LinkAddress address : properties.getLinkAddresses()) {
+            InetAddress inetAddress = address.getAddress();
+            if (inetAddress instanceof Inet4Address && !inetAddress.isLinkLocalAddress()) {
+                return inetAddress.getHostAddress();
+            }
+        }
+        return "No IPV4 found";
+    }
 
     public Preview.SurfaceProvider getPreviewSurfaceProvider() {
         return viewBinding.viewFinder.getSurfaceProvider();
