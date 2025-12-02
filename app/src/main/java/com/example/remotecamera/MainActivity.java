@@ -13,6 +13,7 @@ import android.net.Network;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.View;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
@@ -98,6 +99,19 @@ public class MainActivity extends AppCompatActivity {
 
         // Enable edge-to-edge UI
         EdgeToEdge.enable(this);
+
+        View root = viewBinding.getRoot();
+        View settingButton = viewBinding.settingButton;
+
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+
+            int rightInset = insets.getSystemWindowInsetRight();
+
+            settingButton.setTranslationX(-rightInset);
+
+            return insets.consumeSystemWindowInsets();
+        });
+
 
         // Request permissions if needed
         if (!allPermissionsGranted()) {
