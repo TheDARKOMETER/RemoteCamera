@@ -50,13 +50,18 @@ public class MJPEGWebService extends Service implements IStreamable {
         return getApplicationContext();
     }
 
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        stopSelf();
+        super.onTaskRemoved(rootIntent);
+    }
 
     @Override
     public boolean isStreaming() {
         return CameraStreamService.isStreaming;
     }
 
-    @RequiresApi(api = Build.VERSION_CODES.O)
+    @RequiresApi(api = Build.VERSION_CODES.TIRAMISU)
     @Override
     public void onCreate() {
         super.onCreate();

@@ -96,6 +96,12 @@ public class CameraStreamService extends Service {
         return binder;
     }
 
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        stopSelf();
+        super.onTaskRemoved(rootIntent);
+    }
+
     private final ServiceConnection connection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
